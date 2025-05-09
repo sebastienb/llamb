@@ -86,56 +86,246 @@ program
       if (args.length === 1 && args[0].startsWith('/')) {
         const slashCommand = args[0].substring(1);
 
+        // Direct execution of slash commands without depending on Commander's command lookup
         switch (slashCommand) {
           case 'models':
-            const modelsCmd = program.commands.find(cmd => cmd.name() === 'models');
-            if (modelsCmd) {
-              modelsCmd.action({} as any);
-              return;
+            try {
+              console.log(chalk.dim('Fetching models...'));
+              const models = await getModels(options.provider);
+              console.log(chalk.bold('Available Models:'));
+              models.forEach(model => {
+                console.log(`  ${model}`);
+              });
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
             }
-            break;
+            return;
+
           case 'model':
-            const modelDefaultCmd = program.commands.find(cmd => cmd.name() === 'model:default');
-            if (modelDefaultCmd) {
-              modelDefaultCmd.action({} as any);
-              return;
+            try {
+              // Get the provider
+              const providers = getProviders();
+              const defaultProviderName = getDefaultProvider();
+              const providerName = options.provider || defaultProviderName;
+
+              // Find the provider
+              const provider = providers.find(p => p.name === providerName);
+              if (!provider) {
+                console.log(chalk.yellow(`Provider '${providerName}' not found.`));
+                return;
+              }
+
+              console.log(chalk.dim(`Fetching models for ${provider.name}...`));
+              let models: string[] = [];
+
+              try {
+                models = await getModels(provider.name);
+              } catch (error: any) {
+                console.log(chalk.yellow(`Could not fetch models for ${provider.name}: ${error.message}`));
+                console.log(chalk.yellow('You will need to enter the model name manually.'));
+              }
+
+              let modelAnswer;
+
+              if (models.length > 0) {
+                // Show current default model
+                console.log(chalk.dim(`Current default model: ${provider.defaultModel}`));
+
+                // Let user select from available models
+                modelAnswer = await inquirer.prompt({
+                  type: 'list',
+                  name: 'model',
+                  message: 'Select default model:',
+                  choices: models,
+                  default: models.findIndex(m => m === provider.defaultModel),
+                });
+              } else {
+                // If we couldn't get models, let the user enter manually
+                modelAnswer = await inquirer.prompt({
+                  type: 'input',
+                  name: 'model',
+                  message: 'Enter default model name:',
+                  default: provider.defaultModel,
+                  validate: (input: string) => input.length > 0 ? true : 'Model name cannot be empty',
+                });
+              }
+
+              // Update the provider's default model
+              const updatedProvider = {
+                ...provider,
+                defaultModel: modelAnswer.model
+              };
+
+              // Add provider to update it (this replaces the existing entry)
+              await addProvider(updatedProvider);
+              console.log(chalk.green(`Default model for '${provider.name}' set to '${modelAnswer.model}'`));
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
             }
-            break;
+            return;
+
           case 'providers':
-            const providersCmd = program.commands.find(cmd => cmd.name() === 'providers');
-            if (providersCmd) {
-              providersCmd.action({} as any);
-              return;
+            try {
+              const providers = getProviders();
+              const defaultProvider = getDefaultProvider();
+
+              console.log(chalk.bold('Configured Providers:'));
+
+              let readyProviders = 0;
+
+              // Check for stored API keys
+              for (const provider of providers) {
+                const isDefault = provider.name === defaultProvider;
+                const hasApiKey = provider.noAuth ? true : await KeyManager.getApiKey(provider.name);
+                const isReady = provider.noAuth || hasApiKey;
+
+                if (isReady) readyProviders++;
+
+                // Prefix with status indicators
+                let prefix = isDefault ? chalk.green('* ') : '  ';
+
+                // Color-code the provider name based on ready status
+                const nameStyle = isReady ? chalk.bold : chalk.dim;
+                let providerInfo = `${prefix}${nameStyle(provider.name)} - ${provider.baseUrl} ${chalk.dim(`(default model: ${provider.defaultModel})`)}`;
+
+                // Add API key status
+                if (provider.noAuth) {
+                  providerInfo += ' ' + chalk.green('(ready to use)');
+                } else if (hasApiKey) {
+                  providerInfo += ' ' + chalk.green('(API key: ✓)');
+                } else {
+                  providerInfo += ' ' + chalk.yellow('(API key: ✗)');
+                }
+
+                console.log(providerInfo);
+              }
+
+              // Show help tips if no providers are ready to use
+              if (readyProviders === 0) {
+                console.log('');
+                console.log(chalk.yellow('⚠️  No providers are ready to use.'));
+                console.log(chalk.cyan('To add an API key, run: ') + chalk.bold('llamb provider:apikey'));
+                console.log(chalk.cyan('To add a new provider, run: ') + chalk.bold('llamb provider:add'));
+                console.log('');
+                console.log(chalk.green('Tip: If you have Ollama installed locally, you can use it without an API key.'));
+              }
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
             }
-            break;
+            return;
+
           case 'clear':
-            const clearContextCmd = program.commands.find(cmd => cmd.name() === 'context:clear');
-            if (clearContextCmd) {
-              clearContextCmd.action({} as any);
-              return;
+            try {
+              const sessionManager = SessionManager.getInstance();
+              sessionManager.clearSession();
+              console.log(chalk.green('Conversation context has been cleared.'));
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
             }
-            break;
+            return;
+
           case 'new':
-            const newContextCmd = program.commands.find(cmd => cmd.name() === 'context:new');
-            if (newContextCmd) {
-              newContextCmd.action({} as any);
-              return;
+            try {
+              const sessionManager = SessionManager.getInstance();
+              sessionManager.createNewSession();
+              console.log(chalk.green('Started a new conversation context.'));
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
             }
-            break;
+            return;
+
           case 'history':
-            const historyCmd = program.commands.find(cmd => cmd.name() === 'context:history');
-            if (historyCmd) {
-              historyCmd.action({} as any);
-              return;
+            try {
+              const sessionManager = SessionManager.getInstance();
+              const messages = sessionManager.getMessages();
+
+              if (messages.length === 0) {
+                console.log(chalk.yellow('No conversation history yet.'));
+                return;
+              }
+
+              console.log(chalk.bold('Conversation History:'));
+              console.log(chalk.dim(`Terminal ID: ${sessionManager.getTerminalId()}`));
+              console.log('');
+
+              // Get terminal width for the output box
+              const terminalWidth = process.stdout.columns || 80;
+              const maxWidth = Math.min(terminalWidth - 10, 100);
+
+              // Display each message with appropriate styling
+              messages.forEach((message, index) => {
+                const roleColor = message.role === 'user' ? chalk.blue : chalk.green;
+                const roleName = message.role === 'user' ? 'You' : 'Assistant';
+
+                console.log(roleColor(chalk.bold(`${roleName}:`)));
+
+                // Create a boxed message
+                const boxedMessage = boxen(wrap(message.content, { width: maxWidth - 4, indent: '' }), {
+                  padding: 1,
+                  borderColor: message.role === 'user' ? 'blue' : 'green',
+                  borderStyle: 'round',
+                  width: maxWidth,
+                });
+
+                console.log(boxedMessage);
+
+                // Add spacing between messages
+                if (index < messages.length - 1) {
+                  console.log('');
+                }
+              });
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
             }
-            break;
+            return;
+
           case 'debug':
-            const debugCmd = program.commands.find(cmd => cmd.name() === 'context:debug');
-            if (debugCmd) {
-              debugCmd.action({} as any);
-              return;
+            try {
+              const sessionManager = SessionManager.getInstance();
+              const terminalId = sessionManager.getTerminalId();
+
+              console.log(chalk.bold('Terminal Session Debug Info:'));
+              console.log('');
+              console.log(chalk.cyan('Terminal ID:'), terminalId);
+              console.log('');
+
+              // Check if this is an SSH session
+              const isSSH = process.env.SSH_CONNECTION ? true : false;
+              console.log(chalk.cyan('Session Type:'), isSSH ? chalk.yellow('SSH Connection') : 'Local Terminal');
+
+              if (isSSH) {
+                console.log('');
+                console.log(chalk.cyan('SSH Session Info:'));
+                console.log(chalk.dim('SSH_CONNECTION:'), process.env.SSH_CONNECTION || 'not set');
+                console.log(chalk.dim('SSH_CLIENT:'), process.env.SSH_CLIENT || 'not set');
+                console.log(chalk.dim('SSH_TTY:'), process.env.SSH_TTY || 'not set');
+              }
+
+              console.log('');
+              console.log(chalk.cyan('Environment Variables:'));
+              console.log(chalk.dim('TERM_SESSION_ID:'), process.env.TERM_SESSION_ID || 'not set');
+              console.log(chalk.dim('WINDOWID:'), process.env.WINDOWID || 'not set');
+              console.log(chalk.dim('TERMINATOR_UUID:'), process.env.TERMINATOR_UUID || 'not set');
+              console.log(chalk.dim('ITERM_SESSION_ID:'), process.env.ITERM_SESSION_ID || 'not set');
+              console.log(chalk.dim('SHELL:'), process.env.SHELL || 'not set');
+              console.log(chalk.dim('TTY:'), process.env.TTY || 'not set');
+              console.log(chalk.dim('PID:'), process.pid?.toString() || 'not set');
+
+              console.log('');
+              console.log(chalk.cyan('Session Info:'));
+              const currentSession = sessionManager.getCurrentSession();
+              console.log(chalk.dim('Session ID:'), currentSession.id);
+              console.log(chalk.dim('Created At:'), currentSession.createdAt);
+              console.log(chalk.dim('Updated At:'), currentSession.updatedAt);
+              console.log(chalk.dim('Message Count:'), currentSession.messages.length);
+
+              console.log('');
+              console.log(chalk.green('✓ This command helps debug terminal-specific sessions.'));
+              console.log(chalk.dim('Run this in different terminal windows to verify unique IDs.'));
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
             }
-            break;
+            return;
         }
       }
 
@@ -909,6 +1099,19 @@ program
       console.log(chalk.cyan('Terminal ID:'), terminalId);
       console.log('');
 
+      // Check if this is an SSH session
+      const isSSH = process.env.SSH_CONNECTION ? true : false;
+      console.log(chalk.cyan('Session Type:'), isSSH ? chalk.yellow('SSH Connection') : 'Local Terminal');
+
+      if (isSSH) {
+        console.log('');
+        console.log(chalk.cyan('SSH Session Info:'));
+        console.log(chalk.dim('SSH_CONNECTION:'), process.env.SSH_CONNECTION || 'not set');
+        console.log(chalk.dim('SSH_CLIENT:'), process.env.SSH_CLIENT || 'not set');
+        console.log(chalk.dim('SSH_TTY:'), process.env.SSH_TTY || 'not set');
+      }
+
+      console.log('');
       console.log(chalk.cyan('Environment Variables:'));
       console.log(chalk.dim('TERM_SESSION_ID:'), process.env.TERM_SESSION_ID || 'not set');
       console.log(chalk.dim('WINDOWID:'), process.env.WINDOWID || 'not set');

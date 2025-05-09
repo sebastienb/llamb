@@ -56,7 +56,15 @@ export class SessionManager {
    * This helps identify different terminal sessions
    */
   private static generateTerminalId(): string {
-    // Use environment variables that might help identify the terminal session
+    // First check if this is an SSH session
+    if (process.env.SSH_CONNECTION) {
+      // For SSH sessions, use SSH_CONNECTION which contains source IP, source port,
+      // destination IP, and destination port - creating a unique identifier
+      const sshId = `ssh-${process.env.SSH_CONNECTION}`;
+      return crypto.createHash('md5').update(sshId).digest('hex').substring(0, 8);
+    }
+
+    // For local sessions, use environment variables that might help identify the terminal session
     const envVars = [
       process.env.TERM_SESSION_ID, // macOS Terminal.app session ID
       process.env.WINDOWID,        // X11 window ID
