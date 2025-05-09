@@ -28,12 +28,19 @@ const config = new Conf<ConfigSchema>({
           name: 'openai',
           baseUrl: 'https://api.openai.com/v1',
           defaultModel: 'gpt-3.5-turbo',
+          noAuth: false, // Explicitly mark as requiring auth
         },
+        {
+          name: 'ollama',
+          baseUrl: 'http://localhost:11434/v1',
+          defaultModel: 'llama2',
+          noAuth: true, // Local provider that doesn't need auth
+        }
       ],
     },
     defaultProvider: {
       type: 'string',
-      default: 'openai',
+      default: 'ollama', // Set default to local provider that doesn't need auth
     },
   },
 });
