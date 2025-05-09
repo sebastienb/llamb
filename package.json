@@ -1,0 +1,46 @@
+{
+  "name": "llamb",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "llamb": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli/index.js",
+    "dev": "ts-node --esm src/cli/index.ts",
+    "update": "npm run build && npm link",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@types/node-fetch": "^2.6.12",
+    "boxen": "^8.0.1",
+    "chalk": "^5.4.1",
+    "cli-table3": "^0.6.5",
+    "commander": "^13.1.0",
+    "conf": "^13.1.0",
+    "dotenv": "^16.5.0",
+    "highlight.js": "^11.11.1",
+    "inquirer": "^12.6.0",
+    "keytar": "^7.9.0",
+    "marked": "^15.0.11",
+    "marked-terminal": "^7.3.0",
+    "node-fetch": "^2.7.0",
+    "openai": "^4.98.0",
+    "ora": "^8.2.0",
+    "terminal-link": "^4.0.0",
+    "word-wrap": "^1.2.5"
+  },
+  "devDependencies": {
+    "@types/marked": "^5.0.2",
+    "@types/marked-terminal": "^6.1.1",
+    "@types/node": "^22.15.17",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
