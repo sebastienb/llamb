@@ -7,7 +7,7 @@
     "llamb": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && mkdir -p dist/utils && cp src/utils/polyfills.js dist/utils/",
     "start": "node dist/cli/index.js",
     "dev": "ts-node --esm src/cli/index.ts",
     "update": "npm run build && npm link",
@@ -19,6 +19,7 @@
   "description": "",
   "dependencies": {
     "@types/node-fetch": "^2.6.12",
+    "array.prototype.findlastindex": "^1.2.6",
     "boxen": "^8.0.1",
     "chalk": "^5.4.1",
     "cli-table3": "^0.6.5",
@@ -42,5 +43,9 @@
     "@types/node": "^22.15.17",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
+  },
+  "overrides": {
+    "whatwg-url": "^12.0.1",
+    "punycode": "^2.3.1"
   }
 }

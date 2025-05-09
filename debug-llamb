@@ -1,0 +1,30 @@
+#!/bin/bash
+
+# Debug wrapper for llamb
+echo "Debug: Original arguments: $@"
+
+if [[ "$1" == "/history" ]]; then
+  echo "Debug: Detected /history command"
+  echo "Debug: Executing 'node debug-cmd.mjs context:history'"
+  node "$(dirname "$0")/debug-cmd.mjs" "context:history"
+elif [[ "$1" == "/clear" ]]; then
+  echo "Debug: Detected /clear command"
+  echo "Debug: Executing 'node debug-cmd.mjs context:clear'"
+  node "$(dirname "$0")/debug-cmd.mjs" "context:clear"
+elif [[ "$1" == "/new" ]]; then
+  echo "Debug: Detected /new command"
+  echo "Debug: Executing 'node debug-cmd.mjs context:new'"
+  node "$(dirname "$0")/debug-cmd.mjs" "context:new"
+elif [[ "$1" == "/models" ]]; then
+  echo "Debug: Detected /models command"
+  echo "Debug: Executing 'node debug-cmd.mjs models'"
+  node "$(dirname "$0")/debug-cmd.mjs" "models"
+elif [[ "$1" == "/providers" ]]; then
+  echo "Debug: Detected /providers command"
+  echo "Debug: Executing 'node debug-cmd.mjs providers'"
+  node "$(dirname "$0")/debug-cmd.mjs" "providers"
+else
+  echo "Debug: Regular command execution"
+  echo "Debug: Executing 'node debug-cmd.mjs $@'"
+  node "$(dirname "$0")/debug-cmd.mjs" "$@"
+fi

@@ -1,2 +1,33 @@
 #!/bin/bash
-node "$(dirname "$0")/dist/cli/index.js" "$@"
+
+# Simple script that forwards all arguments to the node program with special handling for slash commands
+if [ "$#" -ge 1 ] && [[ "$1" == "/"* ]]; then
+    # Get the command without the slash
+    cmd="${1:1}"
+
+    case "$cmd" in
+        "history")
+            # Use explicit parameters instead of array expansion
+            node "$(dirname "$0")/dist/cli/index.js" context:history
+            ;;
+        "clear")
+            node "$(dirname "$0")/dist/cli/index.js" context:clear
+            ;;
+        "new")
+            node "$(dirname "$0")/dist/cli/index.js" context:new
+            ;;
+        "models")
+            node "$(dirname "$0")/dist/cli/index.js" models
+            ;;
+        "providers")
+            node "$(dirname "$0")/dist/cli/index.js" providers
+            ;;
+        *)
+            # For unknown slash commands, pass through as is
+            node "$(dirname "$0")/dist/cli/index.js" "$@"
+            ;;
+    esac
+else
+    # Regular command execution for all other cases
+    node "$(dirname "$0")/dist/cli/index.js" "$@"
+fi
