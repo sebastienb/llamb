@@ -192,6 +192,20 @@ llamb provider:add
 llamb provider:default
 ```
 
+#### Change the default model for a provider
+
+```bash
+llamb model:default
+# or
+llamb /model
+```
+
+You can also change the model for a specific provider:
+
+```bash
+llamb model:default -p openai
+```
+
 #### Specify model or provider for a question
 
 ```bash

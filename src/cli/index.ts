@@ -64,6 +64,9 @@ Examples:
   $ llamb /clear                               Clear conversation history
   $ llamb /new                                 Start a new conversation
   $ llamb /debug                               Show terminal session debug info
+  $ llamb /model                               Change the default model for current provider
+  $ llamb model:default                        Select default model for the current provider
+  $ llamb model:default -p openai              Select default model for a specific provider
 `);
 
 program
@@ -88,6 +91,13 @@ program
             const modelsCmd = program.commands.find(cmd => cmd.name() === 'models');
             if (modelsCmd) {
               modelsCmd.action({} as any);
+              return;
+            }
+            break;
+          case 'model':
+            const modelDefaultCmd = program.commands.find(cmd => cmd.name() === 'model:default');
+            if (modelDefaultCmd) {
+              modelDefaultCmd.action({} as any);
               return;
             }
             break;
@@ -184,30 +194,43 @@ program
           let partialResponse = '';
           let parsedResponse = '';
           let boxedResponse = '';
-         
+          let responseHeight = 0;
+          let isFirstChunk = true;
+
           // Process and display streaming content
           const handleStreamingChunk = (chunk: string) => {
             partialResponse += chunk;
-            
+
             // Parse the markdown
             //@ts-ignore
             parsedResponse = marked(partialResponse);
-            
+
             // Create a boxed response
             boxedResponse = boxen(parsedResponse, {
               padding: 1,
               borderColor: 'green',
               borderStyle: 'round',
-              title: 'LLaMB',
+              title: isFirstChunk ? 'LLaMB' : '',  // Only show title on first chunk
               titleAlignment: 'center',
               width: maxWidth,
             });
-            
-            // Clear the console and print the updated box
-            // We use console.clear() to avoid flickering
-            console.clear();
-            console.log(chalk.dim('Asking: ') + question);
-            console.log(boxedResponse);
+
+            // For first chunk, print the question and initial response
+            if (isFirstChunk) {
+              console.log(chalk.dim('Asking: ') + question);
+              console.log(boxedResponse);
+              isFirstChunk = false;
+              responseHeight = boxedResponse.split('\n').length;
+            } else {
+              // For subsequent chunks, use ANSI escape codes to move cursor up and clear
+              // Move cursor up by responseHeight lines to position at start of previous box
+              process.stdout.write(`\x1B[${responseHeight}A`);
+              // Clear from cursor to end of screen (removes old box)
+              process.stdout.write('\x1B[0J');
+              // Print just the box (don't repeat the question line)
+              console.log(boxedResponse);
+              responseHeight = boxedResponse.split('\n').length;
+            }
           };
 
           // Custom spinner with lamb emojis
@@ -245,15 +268,17 @@ program
             padding: 1,
             borderColor: 'green',
             borderStyle: 'round',
-            title: 'LLaMB',
+            title: isFirstChunk ? 'LLaMB' : '',  // Only show title if no streaming happened
             titleAlignment: 'center',
             width: maxWidth,
           });
-          
-          // Clear and show the final answer
-          console.clear();
-          console.log(chalk.dim('Asking: ') + question);
-          console.log(boxedResponse);
+
+          // For consistency, if we never had a chunk, display normally
+          // Otherwise, the streaming logic already showed the final state
+          if (isFirstChunk) {
+            console.log(chalk.dim('Asking: ') + question);
+            console.log(boxedResponse);
+          }
 
           // Handle file output
           if (options.output !== undefined) {
@@ -659,11 +684,79 @@ program
     try {
       console.log(chalk.dim('Fetching models...'));
       const models = await getModels(options.provider);
-      
+
       console.log(chalk.bold('Available Models:'));
       models.forEach(model => {
         console.log(`  ${model}`);
       });
+    } catch (error: any) {
+      console.error(chalk.red('Error:'), error.message);
+    }
+  });
+
+program
+  .command('model:default')
+  .description('Set the default model for a provider')
+  .option('-p, --provider <provider>', 'Specify the provider to use')
+  .action(async (options) => {
+    try {
+      // Get the provider
+      const providers = getProviders();
+      const defaultProviderName = getDefaultProvider();
+      const providerName = options.provider || defaultProviderName;
+
+      // Find the provider
+      const provider = providers.find(p => p.name === providerName);
+      if (!provider) {
+        console.log(chalk.yellow(`Provider '${providerName}' not found.`));
+        return;
+      }
+
+      console.log(chalk.dim(`Fetching models for ${provider.name}...`));
+      let models: string[] = [];
+
+      try {
+        models = await getModels(provider.name);
+      } catch (error: any) {
+        console.log(chalk.yellow(`Could not fetch models for ${provider.name}: ${error.message}`));
+        console.log(chalk.yellow('You will need to enter the model name manually.'));
+      }
+
+      let modelAnswer;
+
+      if (models.length > 0) {
+        // Show current default model
+        console.log(chalk.dim(`Current default model: ${provider.defaultModel}`));
+
+        // Let user select from available models
+        modelAnswer = await inquirer.prompt({
+          type: 'list',
+          name: 'model',
+          message: 'Select default model:',
+          choices: models,
+          default: models.findIndex(m => m === provider.defaultModel),
+        });
+      } else {
+        // If we couldn't get models, let the user enter manually
+        modelAnswer = await inquirer.prompt({
+          type: 'input',
+          name: 'model',
+          message: 'Enter default model name:',
+          default: provider.defaultModel,
+          validate: (input: string) => input.length > 0 ? true : 'Model name cannot be empty',
+        });
+      }
+
+      // Update the provider's default model
+      const updatedProvider = {
+        ...provider,
+        defaultModel: modelAnswer.model
+      };
+
+      // Add provider to update it (this replaces the existing entry)
+      await addProvider(updatedProvider);
+      console.log(chalk.green(`Default model for '${provider.name}' set to '${modelAnswer.model}'`));
+
     } catch (error: any) {
       console.error(chalk.red('Error:'), error.message);
     }

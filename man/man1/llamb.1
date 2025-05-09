@@ -61,6 +61,9 @@ Set the default provider
 .B llamb models
 List available models for a provider
 .TP
+.B llamb model:default
+Set the default model for a provider
+.TP
 .B llamb context:clear
 Clear the current conversation context
 .TP
@@ -77,6 +80,9 @@ Llamb supports short-form slash commands when entering questions:
 .TP
 .B /models
 Equivalent to "llamb models"
+.TP
+.B /model
+Equivalent to "llamb model:default"
 .TP
 .B /providers
 Equivalent to "llamb providers"
@@ -123,6 +129,12 @@ Start a new conversation:
 .TP
 Show terminal session debug info:
 .B llamb /debug
+.TP
+Change the default model for current provider:
+.B llamb /model
+.TP
+Change the default model for a specific provider:
+.B llamb model:default -p openai
 .SH ENVIRONMENT
 .TP
 .B OPENAI_API_KEY
