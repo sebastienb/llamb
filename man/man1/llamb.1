@@ -1,0 +1,143 @@
+.TH LLAMB 1 "May 2024" "llamb 1.0.0" "User Commands"
+.SH NAME
+llamb \- CLI LLM client that answers questions directly from your terminal
+.SH SYNOPSIS
+.B llamb
+[\fIOPTIONS\fR]
+[\fIQUESTION\fR...]
+.SH DESCRIPTION
+.B llamb
+is a command-line interface for working with Large Language Models (LLMs) directly from your terminal.
+It supports multiple providers (OpenAI, Anthropic, Mistral, etc.), conversation history management,
+file input/output, and terminal-specific sessions.
+.SH OPTIONS
+.TP
+.B \-m, \-\-model <model>
+Specify the model to use (defaults to provider's default model)
+.TP
+.B \-p, \-\-provider <provider>
+Specify the provider to use (defaults to the configured default provider)
+.TP
+.B \-u, \-\-baseUrl <baseUrl>
+Specify a custom base URL for this request
+.TP
+.B \-s, \-\-stream
+Stream the response as it arrives (default: true)
+.TP
+.B \-n, \-\-no\-history
+Do not use conversation history for this request
+.TP
+.B \-f, \-\-file <path>
+Path to a file to include with your question
+.TP
+.B \-o, \-\-output [path]
+Save the response to a file. If path is not provided, you will be prompted for a filename.
+.TP
+.B \-\-overwrite
+Overwrite existing files without prompting
+.TP
+.B \-h, \-\-help
+Display help information
+.TP
+.B \-V, \-\-version
+Display version information
+.SH COMMANDS
+.TP
+.B llamb [question...]
+Ask a question to the LLM
+.TP
+.B llamb providers
+List configured LLM providers
+.TP
+.B llamb provider:add
+Add or update a provider configuration
+.TP
+.B llamb provider:apikey
+Update API key for a provider
+.TP
+.B llamb provider:default
+Set the default provider
+.TP
+.B llamb models
+List available models for a provider
+.TP
+.B llamb context:clear
+Clear the current conversation context
+.TP
+.B llamb context:new
+Start a new conversation context
+.TP
+.B llamb context:history
+Display the current conversation history
+.TP
+.B llamb context:debug
+Display terminal and session debugging information
+.SH SLASH COMMANDS
+Llamb supports short-form slash commands when entering questions:
+.TP
+.B /models
+Equivalent to "llamb models"
+.TP
+.B /providers
+Equivalent to "llamb providers"
+.TP
+.B /clear
+Equivalent to "llamb context:clear"
+.TP
+.B /new
+Equivalent to "llamb context:new"
+.TP
+.B /history
+Equivalent to "llamb context:history"
+.TP
+.B /debug
+Equivalent to "llamb context:debug"
+.SH EXAMPLES
+.TP
+Ask a simple question:
+.B llamb "What is the capital of France?"
+.TP
+Include a file with your question:
+.B llamb -f script.js "Explain this code"
+.TP
+Process file contents:
+.B llamb "Summarize this" -f document.txt
+.TP
+Save response (prompts for filename):
+.B llamb "Generate JSON" -o
+.TP
+Save response to a specific file:
+.B llamb "Generate JSON" -o result.json
+.TP
+Ask without using conversation history:
+.B llamb -n "What is 2+2?"
+.TP
+View conversation history:
+.B llamb /history
+.TP
+Clear conversation history:
+.B llamb /clear
+.TP
+Start a new conversation:
+.B llamb /new
+.TP
+Show terminal session debug info:
+.B llamb /debug
+.SH ENVIRONMENT
+.TP
+.B OPENAI_API_KEY
+If set, will be used as the default API key for OpenAI
+.SH FILES
+.TP
+.B ~/.llamb/sessions/
+Directory where conversation sessions are stored
+.TP
+.B ~/.config/llamb/
+Configuration directory for provider settings
+.SH NOTES
+Terminal-specific sessions are determined using environment variables such as TTY, PID, and terminal-specific session IDs.
+Each terminal window will maintain its own conversation history.
+.SH AUTHOR
+This manual page was written for the llamb project.
+.SH SEE ALSO
+Full documentation is available at: https://github.com/yourgithub/llamb

@@ -6,12 +6,17 @@
   "bin": {
     "llamb": "./dist/cli/index.js"
   },
+  "man": [
+    "./man/man1/llamb.1"
+  ],
   "scripts": {
     "build": "tsc && mkdir -p dist/utils && cp src/utils/polyfills.js dist/utils/",
     "start": "node dist/cli/index.js",
     "dev": "ts-node --esm src/cli/index.ts",
     "update": "npm run build && npm link",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "install-man": "mkdir -p /usr/local/share/man/man1 && cp man/man1/llamb.1 /usr/local/share/man/man1/ && mandb",
+    "test-man": "./scripts/test-man.sh"
   },
   "keywords": [],
   "author": "",

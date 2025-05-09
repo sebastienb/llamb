@@ -63,6 +63,20 @@ You can update API keys for existing providers:
 llamb provider:apikey
 ```
 
+If you install from source, you can install the man page with:
+
+```bash
+sudo npm run install-man
+```
+
+## Documentation
+
+LLaMB comes with a comprehensive man page that you can access after installation:
+
+```bash
+man llamb
+```
+
 ## Usage
 
 ### Ask a question
@@ -134,6 +148,18 @@ llamb context:new
 llamb -n "What is 2+2?"
 # or
 llamb --no-history "What is 2+2?"
+```
+
+#### Terminal-specific sessions
+
+LLaMB maintains separate conversation histories for each terminal window. This means you can have different conversations going on in different terminal sessions.
+
+To see information about your current terminal session:
+
+```bash
+llamb /debug
+# or
+llamb context:debug
 ```
 
 ### Working with Models and Providers
