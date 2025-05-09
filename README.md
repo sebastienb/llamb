@@ -118,4 +118,4 @@ llamb -m llama2 -p ollama -u http://localhost:11434/v1 explain quantum computing
 
 ## License
 
-ISC
+MIT
