@@ -36,9 +36,16 @@ export async function getModels(providerName?: string): Promise<string[]> {
 // Define a callback type for streaming
 export type StreamCallbackFn = (chunk: string) => void;
 
-// Non-streaming version
-export async function askQuestion(question: string, modelName?: string, providerName?: string, customBaseUrl?: string, useHistory: boolean = true): Promise<string> {
-  const fullResponse = await askQuestionWithStreaming(question, null, modelName, providerName, customBaseUrl, useHistory);
+// Non-streaming version with file content support
+export async function askQuestion(
+  question: string,
+  modelName?: string,
+  providerName?: string,
+  customBaseUrl?: string,
+  useHistory: boolean = true,
+  fileContent?: string
+): Promise<string> {
+  const fullResponse = await askQuestionWithStreaming(question, null, modelName, providerName, customBaseUrl, useHistory, fileContent);
   return fullResponse;
 }
 
@@ -49,7 +56,8 @@ export async function askQuestionWithStreaming(
   modelName?: string,
   providerName?: string,
   customBaseUrl?: string,
-  useHistory: boolean = true
+  useHistory: boolean = true,
+  fileContent?: string
 ): Promise<string> {
   const provider = await getProviderWithApiKey(providerName);
   const model = modelName || provider.defaultModel;
@@ -83,11 +91,18 @@ export async function askQuestionWithStreaming(
       messages = sessionManager.getMessages();
     }
 
-    // Add the current question
-    messages.push({ role: 'user', content: question });
-
-    // Add to session history
-    sessionManager.addUserMessage(question);
+    // Add the current question, possibly with file content
+    if (fileContent) {
+      const formattedContent = `${question}\n\nFile content:\n\`\`\`\n${fileContent}\n\`\`\``;
+      messages.push({ role: 'user', content: formattedContent });
+      // Add to session history
+      sessionManager.addUserMessage(formattedContent);
+    } else {
+      // Add just the question if no file content
+      messages.push({ role: 'user', content: question });
+      // Add to session history
+      sessionManager.addUserMessage(question);
+    }
 
     // If streamCallback is provided, use streaming
     if (streamCallback) {

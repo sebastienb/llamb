@@ -14,11 +14,13 @@ import { marked } from 'marked';
 //@ts-ignore
 import TerminalRenderer from 'marked-terminal';
 import hljs from 'highlight.js';
+import path from 'path';
 // Import inquirer directly now that we have polyfills
 import inquirer from 'inquirer';
 import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider, getProviderWithApiKey } from '../services/llm.js';
 import { KeyManager } from '../utils/keyManager.js';
 import { SessionManager } from '../services/sessionManager.js';
+import { readFile, writeFile, fileExists, generateUniqueFilename } from '../utils/fileUtils.js';
 
 // Check for required system dependencies
 function checkDependencies() {
@@ -49,7 +51,20 @@ checkDependencies();
 program
   .name('llamb')
   .description('CLI LLM client that answers questions directly from your terminal')
-  .version('1.0.0');
+  .version('1.0.0')
+  .addHelpText('after', `
+Examples:
+  $ llamb "What is the capital of France?"     Ask a simple question
+  $ llamb -f script.js "Explain this code"     Include a file with your question
+  $ llamb "Summarize this" -f document.txt     Process file contents
+  $ llamb "Generate JSON" -o                   Save response (prompts for filename)
+  $ llamb "Generate JSON" -o result.json       Save response to a specific file
+  $ llamb -n "What is 2+2?"                    Ask without using conversation history
+  $ llamb /history                             View conversation history
+  $ llamb /clear                               Clear conversation history
+  $ llamb /new                                 Start a new conversation
+  $ llamb /debug                               Show terminal session debug info
+`);
 
 program
   .arguments('[question...]')
@@ -59,6 +74,9 @@ program
   .option('-u, --baseUrl <baseUrl>', 'Specify a custom base URL for this request')
   .option('-s, --stream', 'Stream the response as it arrives (default: true)')
   .option('-n, --no-history', 'Do not use conversation history for this request')
+  .option('-f, --file <path>', 'Path to a file to include with your question')
+  .option('-o, --output [path]', 'Save the response to a file (will prompt for filename)')
+  .option('--overwrite', 'Overwrite existing files without prompting')
   .action(async (args, options) => {
     try {
       // Check for slash commands which should be handled directly
@@ -101,6 +119,13 @@ program
               return;
             }
             break;
+          case 'debug':
+            const debugCmd = program.commands.find(cmd => cmd.name() === 'context:debug');
+            if (debugCmd) {
+              debugCmd.action({} as any);
+              return;
+            }
+            break;
         }
       }
 
@@ -111,7 +136,20 @@ program
 
       const question = args.join(' ');
       console.log(chalk.dim('Asking: ') + question);
-      
+
+      // Handle file input if provided
+      let fileContent: string | undefined;
+      if (options.file) {
+        try {
+          console.log(chalk.dim(`Reading file: ${options.file}`));
+          fileContent = readFile(options.file);
+          console.log(chalk.green(`✓ File loaded (${(fileContent.length / 1024).toFixed(1)} KB)`));
+        } catch (error: any) {
+          console.error(chalk.red(`Error reading file: ${error.message}`));
+          return;
+        }
+      }
+
       try {
         // Check if the provider has a valid API key if needed
         const provider = await getProviderWithApiKey(options.provider);
@@ -196,7 +234,8 @@ program
             options.model,
             options.provider,
             options.baseUrl,
-            options.history // Pass the history option
+            options.history, // Pass the history option
+            fileContent // Include file content if provided
           );
           
           // Ensure final answer is displayed correctly
@@ -215,6 +254,15 @@ program
           console.clear();
           console.log(chalk.dim('Asking: ') + question);
           console.log(boxedResponse);
+
+          // Handle file output
+          if (options.output !== undefined) {
+            try {
+              await handleFileOutput(answer, options.output, options.overwrite);
+            } catch (error: any) {
+              console.error(chalk.red(`Error saving response: ${error.message}`));
+            }
+          }
         } else {
           // Non-streaming version - show spinner
           const lambEmojis = ['🐑', '🐑 🐑', '🐑 🐑 🐑', '🐑 🐑', '🐑'];
@@ -228,7 +276,7 @@ program
           }).start();
           
           // Call without streaming
-          answer = await askQuestion(question, options.model, options.provider, options.baseUrl, options.history);
+          answer = await askQuestion(question, options.model, options.provider, options.baseUrl, options.history, fileContent);
           
           // Stop the spinner
           spinner.stop();
@@ -252,6 +300,15 @@ program
           });
           
           console.log(boxedAnswer);
+
+          // Handle file output
+          if (options.output !== undefined) {
+            try {
+              await handleFileOutput(answerText, options.output, options.overwrite);
+            } catch (error: any) {
+              console.error(chalk.red(`Error saving response: ${error.message}`));
+            }
+          }
         }
       } catch (error: any) {
         if (error.message.includes('No API key found') || 
@@ -612,6 +669,57 @@ program
     }
   });
 
+/**
+ * Handle saving response to a file with interactive prompts
+ */
+async function handleFileOutput(content: string, outputPath: string | true, overwrite: boolean = false): Promise<void> {
+  let finalPath = typeof outputPath === 'string' ? outputPath : '';
+
+  // If no path is specified (just -o flag), prompt for a filename
+  if (!finalPath) {
+    const answer = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'filename',
+        message: 'Enter filename to save response:',
+        default: `llamb-response-${Date.now()}.txt`,
+        validate: (input: string) => input.length > 0 ? true : 'Filename cannot be empty'
+      }
+    ]);
+    finalPath = answer.filename;
+  }
+
+  // Check if file exists and handle appropriately
+  if (fileExists(finalPath) && !overwrite) {
+    const answer = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'action',
+        message: `File '${finalPath}' already exists. What would you like to do?`,
+        choices: [
+          { name: 'Overwrite existing file', value: 'overwrite' },
+          { name: 'Generate a new filename', value: 'new' },
+          { name: 'Cancel', value: 'cancel' }
+        ]
+      }
+    ]);
+
+    if (answer.action === 'cancel') {
+      console.log(chalk.yellow('File save cancelled.'));
+      return;
+    } else if (answer.action === 'new') {
+      const newPath = generateUniqueFilename(finalPath);
+      console.log(chalk.dim(`Using new filename: ${newPath}`));
+      finalPath = newPath;
+    }
+    // For 'overwrite', we'll just continue with the existing path
+  }
+
+  // Write the file
+  writeFile(finalPath, content, true); // true to overwrite if needed
+  console.log(chalk.green(`✓ Response saved to: ${finalPath}`));
+}
+
 // This handler is for unrecognized commands only
 program.on('command:*', async (operands) => {
   const command = operands[0];
@@ -660,6 +768,7 @@ program
       }
 
       console.log(chalk.bold('Conversation History:'));
+      console.log(chalk.dim(`Terminal ID: ${sessionManager.getTerminalId()}`));
       console.log('');
 
       // Get terminal width for the output box
@@ -688,6 +797,45 @@ program
           console.log('');
         }
       });
+    } catch (error: any) {
+      console.error(chalk.red('Error:'), error.message);
+    }
+  });
+
+// Add debug command for terminal session info
+program
+  .command('context:debug')
+  .description('Display terminal and session debugging information')
+  .action(() => {
+    try {
+      const sessionManager = SessionManager.getInstance();
+      const terminalId = sessionManager.getTerminalId();
+
+      console.log(chalk.bold('Terminal Session Debug Info:'));
+      console.log('');
+      console.log(chalk.cyan('Terminal ID:'), terminalId);
+      console.log('');
+
+      console.log(chalk.cyan('Environment Variables:'));
+      console.log(chalk.dim('TERM_SESSION_ID:'), process.env.TERM_SESSION_ID || 'not set');
+      console.log(chalk.dim('WINDOWID:'), process.env.WINDOWID || 'not set');
+      console.log(chalk.dim('TERMINATOR_UUID:'), process.env.TERMINATOR_UUID || 'not set');
+      console.log(chalk.dim('ITERM_SESSION_ID:'), process.env.ITERM_SESSION_ID || 'not set');
+      console.log(chalk.dim('SHELL:'), process.env.SHELL || 'not set');
+      console.log(chalk.dim('TTY:'), process.env.TTY || 'not set');
+      console.log(chalk.dim('PID:'), process.pid?.toString() || 'not set');
+
+      console.log('');
+      console.log(chalk.cyan('Session Info:'));
+      const currentSession = sessionManager.getCurrentSession();
+      console.log(chalk.dim('Session ID:'), currentSession.id);
+      console.log(chalk.dim('Created At:'), currentSession.createdAt);
+      console.log(chalk.dim('Updated At:'), currentSession.updatedAt);
+      console.log(chalk.dim('Message Count:'), currentSession.messages.length);
+
+      console.log('');
+      console.log(chalk.green('✓ This command helps debug terminal-specific sessions.'));
+      console.log(chalk.dim('Run this in different terminal windows to verify unique IDs.'));
     } catch (error: any) {
       console.error(chalk.red('Error:'), error.message);
     }

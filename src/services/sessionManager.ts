@@ -2,6 +2,7 @@ import Conf from 'conf';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 
 // Define the message interface to match OpenAI's format
 export interface Message {
@@ -17,12 +18,16 @@ export interface Session {
 }
 
 export class SessionManager {
-  private static instance: SessionManager;
+  private static instances: Map<string, SessionManager> = new Map();
   private currentSession: Session;
   private conf: Conf<any>;
   private sessionsPath: string;
+  private terminalId: string;
 
-  private constructor() {
+  private constructor(terminalId?: string) {
+    // Generate or use the provided terminal ID
+    this.terminalId = terminalId || SessionManager.generateTerminalId();
+
     // Initialize Conf for storing metadata
     this.conf = new Conf({
       projectName: 'llamb',
@@ -35,8 +40,9 @@ export class SessionManager {
       mkdirSync(this.sessionsPath, { recursive: true });
     }
 
-    // Initialize or load current session
-    const sessionId = this.conf.get('currentSessionId') as string;
+    // Initialize or load current session for this terminal
+    const sessionKey = `terminal_${this.terminalId}`;
+    const sessionId = this.conf.get(sessionKey) as string;
     if (sessionId && this.sessionExists(sessionId)) {
       this.currentSession = this.loadSession(sessionId);
     } else {
@@ -46,13 +52,37 @@ export class SessionManager {
   }
 
   /**
-   * Get the SessionManager instance (Singleton pattern)
+   * Generate a unique terminal ID based on environment variables
+   * This helps identify different terminal sessions
    */
-  public static getInstance(): SessionManager {
-    if (!SessionManager.instance) {
-      SessionManager.instance = new SessionManager();
+  private static generateTerminalId(): string {
+    // Use environment variables that might help identify the terminal session
+    const envVars = [
+      process.env.TERM_SESSION_ID, // macOS Terminal.app session ID
+      process.env.WINDOWID,        // X11 window ID
+      process.env.TERMINATOR_UUID, // Terminator terminal ID
+      process.env.ITERM_SESSION_ID, // iTerm2 session ID
+      process.env.SHELL,           // Current shell
+      process.env.TTY,             // TTY device
+      process.pid?.toString(),     // Process ID
+      Date.now().toString()        // Fallback to timestamp
+    ].filter(Boolean).join('-');
+
+    // Create a hash of these values to get a consistent ID
+    return crypto.createHash('md5').update(envVars).digest('hex').substring(0, 8);
+  }
+
+  /**
+   * Get the SessionManager instance for the current terminal
+   */
+  public static getInstance(terminalId?: string): SessionManager {
+    const id = terminalId || SessionManager.generateTerminalId();
+
+    if (!SessionManager.instances.has(id)) {
+      SessionManager.instances.set(id, new SessionManager(id));
     }
-    return SessionManager.instance;
+
+    return SessionManager.instances.get(id)!;
   }
 
   /**
@@ -101,14 +131,32 @@ export class SessionManager {
   public createNewSession(): Session {
     const now = new Date().toISOString();
     this.currentSession = {
-      id: `session_${Date.now()}`,
+      id: `session_${this.terminalId}_${Date.now()}`,
       messages: [],
       createdAt: now,
       updatedAt: now
     };
-    this.conf.set('currentSessionId', this.currentSession.id);
+
+    // Save session ID with terminal-specific key
+    const sessionKey = `terminal_${this.terminalId}`;
+    this.conf.set(sessionKey, this.currentSession.id);
+
     this.saveSession();
     return this.currentSession;
+  }
+
+  /**
+   * Get the terminal ID for this session manager
+   */
+  public getTerminalId(): string {
+    return this.terminalId;
+  }
+
+  /**
+   * Get the current session
+   */
+  public getCurrentSession(): Session {
+    return { ...this.currentSession };
   }
 
   /**
@@ -132,9 +180,11 @@ export class SessionManager {
     try {
       const filePath = this.getSessionFilePath(this.currentSession.id);
       writeFileSync(filePath, JSON.stringify(this.currentSession, null, 2), 'utf8');
-      // Update metadata
-      this.conf.set('currentSessionId', this.currentSession.id);
-      this.conf.set('lastUpdateTime', this.currentSession.updatedAt);
+
+      // Update terminal-specific metadata
+      const sessionKey = `terminal_${this.terminalId}`;
+      this.conf.set(sessionKey, this.currentSession.id);
+      this.conf.set(`${sessionKey}_lastUpdate`, this.currentSession.updatedAt);
     } catch (error) {
       console.error('Failed to save session:', error);
     }

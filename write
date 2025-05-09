@@ -1,0 +1,35 @@
+**Building LLaMB: A Command-Line Large Language Model Client in Under 12 Hours**
+
+As a developer and AI enthusiast, I've always been fascinated by the potential of Large Language Models (LLMs). Recently, I decided to take on the challenge of building a command-line client for interacting with these powerful models. The result is LLaMB, an open-source tool that makes it easy for developers and non-technical users alike to harness the power of LLMs from their terminal.
+
+**The Inspiration**
+
+My inspiration for LLaMB came from several sources. I'd been experimenting with various AI models using APIs like OpenAI's Completion API and had become frustrated with the complexity of interacting with them. I wanted a tool that would allow me to quickly test and explore different models without having to worry about the underlying infrastructure.
+
+**The Challenge**
+
+With a deadline of under 12 hours, I set out to build LLaMB from scratch using Claude Code, an AI-powered coding assistant. My goal was to create a fully functional command-line client with support for multiple LLM providers, secure API key storage, and easy setup.
+
+**Using Claude Code**
+
+Claude Code proved to be an invaluable tool throughout the development process. Its AI-driven code completion and suggestion features allowed me to focus on the overall architecture of the project rather than getting bogged down in minute details. With Claude's help, I was able to write clean, efficient, and well-structured code that met my requirements.
+
+**The Development Process**
+
+Here's a high-level overview of how I built LLaMB:
+
+1. **Initial Setup**: I started by setting up the basic project structure using Claude Code's project template feature.
+2. **Provider Support**: Next, I added support for multiple LLM providers, including OpenAI, Anthropic, and Ollama, using Claude's API documentation and integration capabilities.
+3. **Secure API Key Storage**: I implemented secure API key storage using system-specific credential stores like Keychain (macOS), Credential Manager (Windows), and libsecret (Linux).
+4. **Command-Line Interface**: Using Claude's UI/UX suggestions, I designed a user-friendly command-line interface that allowed users to easily interact with LLMs.
+5. **Model Management**: I added features for listing, adding, updating, and removing models from the provider list.
+
+**The Result**
+
+After an intense 11 hours of coding, I had a fully functional version of LLaMB. The tool allows users to easily interact with LLMs using a variety of commands, including asking questions, listing available models, and configuring providers. With secure API key storage and easy setup, LLaMB provides a seamless experience for developers and non-technical users alike.
+
+**Conclusion**
+
+Building LLaMB was an incredible learning experience that showcased the power of AI-driven development tools like Claude Code. By leveraging these tools, I was able to create a high-quality project in under 12 hours, demonstrating the potential of collaborative coding and AI-powered development.
+
+You can find the complete code for LLaMB on GitHub: [your repository link]. Give it a try and let me know what you think!
