@@ -15,12 +15,31 @@ import hljs from 'highlight.js';
 import { askQuestion, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider } from '../services/llm.js';
 import { KeyManager } from '../utils/keyManager.js';
 
+// Check for required system dependencies
+function checkDependencies() {
+  const { hasRequiredDeps, installCommand } = KeyManager.checkDependencies();
+  if (!hasRequiredDeps) {
+    console.error(chalk.red('Error: Missing system dependencies required for secure credential storage.'));
+    console.error(chalk.yellow('To fix this issue, please install the required dependencies:'));
+    console.error(chalk.cyan(installCommand));
+    console.error(chalk.yellow('After installing dependencies, run: npm rebuild keytar'));
+    console.error('');
+    console.error(chalk.dim('You can still use local providers that don\'t require authentication.'));
+    console.error('');
+  }
+  return hasRequiredDeps;
+}
+
 // Set up Terminal Renderer for markdown
 // Need to use ts-ignore since the types for marked-terminal are problematic
 //@ts-ignore
 marked.setOptions({ renderer: new TerminalRenderer() });
 
 const program = new Command();
+
+// Check for dependencies on startup, but don't block operation
+// This provides an early warning to users
+checkDependencies();
 
 program
   .name('llamb')
@@ -178,6 +197,8 @@ program
   .description('Add or update a provider configuration')
   .action(async () => {
     try {
+      // Check dependencies at the beginning
+      const depsOk = checkDependencies();
       // First select from common providers or custom
       const providerSelection = await inquirer.prompt([
         {
@@ -273,11 +294,21 @@ program
       };
       
       // Store provider info and API key securely
-      await addProvider(answers);
-      
-      console.log(chalk.green(`Provider '${answers.name}' added/updated successfully`));
-      if (answers.apiKey) {
-        console.log(chalk.green('API key has been stored securely in your system keychain'));
+      try {
+        await addProvider(answers);
+        
+        console.log(chalk.green(`Provider '${answers.name}' added/updated successfully`));
+        if (answers.apiKey) {
+          console.log(chalk.green('API key has been stored securely in your system keychain'));
+        }
+      } catch (error: any) {
+        if (error.message.includes('Missing system dependencies')) {
+          // The detailed error message is already printed by the KeyManager
+          console.log(chalk.yellow('Provider configuration saved but API key storage failed.'));
+          console.log(chalk.yellow('Please install the required dependencies and try again.'));
+        } else {
+          throw error;
+        }
       }
     } catch (error: any) {
       console.error(chalk.red('Error:'), error.message);
@@ -289,6 +320,13 @@ program
   .description('Update API key for a provider')
   .action(async () => {
     try {
+      // Check dependencies at the beginning
+      const depsOk = checkDependencies();
+      if (!depsOk) {
+        console.error(chalk.yellow('Cannot proceed with API key operations until dependencies are installed.'));
+        console.error(chalk.yellow('Please install the required dependencies and try again.'));
+        return;
+      }
       const providers = getProviders();
       if (providers.length === 0) {
         console.log(chalk.yellow('No providers configured. Add a provider first.'));
