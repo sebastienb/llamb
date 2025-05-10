@@ -65,19 +65,61 @@ export class SessionManager {
     }
 
     // For local sessions, use environment variables that might help identify the terminal session
-    const envVars = [
+    // Important: Remove process.pid and Date.now() which change between sessions in the same terminal
+    // Only use stable identifiers that persist across terminal sessions
+
+    // Get the TTY path which is stable for the same terminal window
+    const tty = process.env.TTY || '';
+
+    // Include terminal-specific IDs when available
+    const terminalIds = [
       process.env.TERM_SESSION_ID, // macOS Terminal.app session ID
       process.env.WINDOWID,        // X11 window ID
       process.env.TERMINATOR_UUID, // Terminator terminal ID
-      process.env.ITERM_SESSION_ID, // iTerm2 session ID
-      process.env.SHELL,           // Current shell
-      process.env.TTY,             // TTY device
-      process.pid?.toString(),     // Process ID
-      Date.now().toString()        // Fallback to timestamp
-    ].filter(Boolean).join('-');
+      process.env.ITERM_SESSION_ID // iTerm2 session ID
+    ].filter(Boolean);
 
-    // Create a hash of these values to get a consistent ID
-    return crypto.createHash('md5').update(envVars).digest('hex').substring(0, 8);
+    // Different strategies based on available environment variables
+    if (terminalIds.length > 0) {
+      // If we have a terminal-specific ID, use it with TTY
+      const envVars = [...terminalIds, tty, process.env.SHELL].filter(Boolean).join('-');
+      return crypto.createHash('md5').update(envVars).digest('hex').substring(0, 8);
+    } else if (tty) {
+      // If we have TTY but no terminal ID, hash the TTY with user info
+      // This ensures we get a consistent ID for the same terminal
+      const username = process.env.USER || process.env.USERNAME || '';
+      const userTty = `${username}-${tty}-${process.env.SHELL || ''}`;
+      return crypto.createHash('md5').update(userTty).digest('hex').substring(0, 8);
+    } else {
+      // Last resort - create a pseudo-random ID but store it in the user's home directory
+      // This at least ensures consistency within a single terminal session
+      const homedir = os.homedir();
+      const localIdPath = path.join(homedir, '.llamb', 'local_terminal_id');
+
+      try {
+        // Try to read existing ID first
+        if (existsSync(localIdPath)) {
+          return readFileSync(localIdPath, 'utf8').trim();
+        }
+
+        // Generate new ID if none exists
+        const randomId = crypto.randomBytes(4).toString('hex');
+
+        // Ensure directory exists
+        const dir = path.dirname(localIdPath);
+        if (!existsSync(dir)) {
+          mkdirSync(dir, { recursive: true });
+        }
+
+        // Save for future use
+        writeFileSync(localIdPath, randomId);
+        return randomId;
+      } catch (error) {
+        // If file operations fail, fall back to a simple hash of username + shell
+        const fallback = `${process.env.USER || ''}-${process.env.SHELL || ''}-local`;
+        return crypto.createHash('md5').update(fallback).digest('hex').substring(0, 8);
+      }
+    }
   }
 
   /**
