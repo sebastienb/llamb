@@ -21,6 +21,7 @@ import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefa
 import { KeyManager } from '../utils/keyManager.js';
 import { SessionManager } from '../services/sessionManager.js';
 import { readFile, writeFile, fileExists, generateUniqueFilename } from '../utils/fileUtils.js';
+import config from '../config/index.js';
 
 // Check for required system dependencies
 function checkDependencies() {
@@ -76,6 +77,8 @@ program
   .option('-p, --provider <provider>', 'Specify the provider to use')
   .option('-u, --baseUrl <baseUrl>', 'Specify a custom base URL for this request')
   .option('-s, --stream', 'Stream the response as it arrives (default: true)')
+  .option('--progress-only', 'Show progress indicator without streaming content (prevents scrollback artifacts)')
+  .option('--live-stream', 'Force live streaming of content even if progress-only mode is enabled')
   .option('-n, --no-history', 'Do not use conversation history for this request')
   .option('-f, --file <path>', 'Path to a file to include with your question')
   .option('-o, --output [path]', 'Save the response to a file (will prompt for filename)')
@@ -376,98 +379,171 @@ program
         
         // Determine if we should stream (default to true unless explicitly set to false)
         const shouldStream = options.stream !== false;
+
+        // Determine if we should use progress-only mode (prevents scrollback artifacts)
+        // Check command-line options first, then fall back to config setting
+        // --live-stream flag overrides both --progress-only and the config setting
+        const useProgressOnly = options.liveStream === true ? false :
+                              (options.progressOnly === true ||
+                              (options.progressOnly !== false && config.get('useProgressOnly')));
         
         let answer: string;
         
         if (shouldStream) {
-          // For streaming, we'll create a live box that updates as content arrives
-          let partialResponse = '';
-          let parsedResponse = '';
-          let boxedResponse = '';
-          let responseHeight = 0;
-          let isFirstChunk = true;
+          if (useProgressOnly) {
+            // PROGRESS-ONLY MODE: collect response and only render at the end
+            // This eliminates all scrollback issues
+            let partialResponse = '';
+            let streamComplete = false;
+            let updateCounter = 0;
+            const streamInterval = 50; // ms between updates
 
-          // Process and display streaming content
-          const handleStreamingChunk = (chunk: string) => {
-            partialResponse += chunk;
+            // Custom spinner alternating between lamb and llama emojis
+            const animalEmojis = ['🐑', '🦙'];
+            const spinner = ora({
+              text: chalk.dim('Thinking...'),
+              spinner: {
+                frames: animalEmojis,
+                interval: 400
+              },
+              color: 'yellow'
+            }).start();
 
-            // Parse the markdown
+            // Display the question once
+            console.log(chalk.dim('Asking: ') + question);
+
+            // Collect the response through streaming without displaying intermediate updates
+            const handleStreamingChunk = (chunk: string) => {
+              partialResponse += chunk;
+              updateCounter++;
+            };
+
+            // Start a timer that will update a progress indicator instead of the content
+            const progressTimer = setInterval(() => {
+              if (updateCounter > 0 && spinner.isSpinning) {
+                spinner.text = chalk.dim(`Receiving response${'.'.repeat(updateCounter % 4)}`);
+                updateCounter = 0;
+              }
+
+              if (streamComplete) {
+                clearInterval(progressTimer);
+              }
+            }, streamInterval);
+
+            // Set up the callback and ask the question
+            answer = await askQuestionWithStreaming(
+              question,
+              handleStreamingChunk,
+              options.model,
+              options.provider,
+              options.baseUrl,
+              options.history,
+              fileContent
+            );
+
+            // Mark streaming as complete and clear the interval
+            streamComplete = true;
+            clearInterval(progressTimer);
+
+            // Stop the spinner
+            spinner.stop();
+
+            // Parse and display the full response at once
             //@ts-ignore
-            parsedResponse = marked(partialResponse);
-
-            // Create a boxed response
-            boxedResponse = boxen(parsedResponse, {
+            const parsedResponse = marked(String(answer)) as string;
+            const boxedResponse = boxen(parsedResponse, {
               padding: 1,
               borderColor: 'green',
               borderStyle: 'round',
-              title: isFirstChunk ? 'LLaMB' : '',  // Only show title on first chunk
+              title: 'LLaMB',
               titleAlignment: 'center',
               width: maxWidth,
             });
 
-            // For first chunk, print the question and initial response
-            if (isFirstChunk) {
-              console.log(chalk.dim('Asking: ') + question);
-              console.log(boxedResponse);
-              isFirstChunk = false;
-              responseHeight = boxedResponse.split('\n').length;
-            } else {
-              // For subsequent chunks, use ANSI escape codes to move cursor up and clear
-              // Move cursor up by responseHeight lines to position at start of previous box
-              process.stdout.write(`\x1B[${responseHeight}A`);
-              // Clear from cursor to end of screen (removes old box)
-              process.stdout.write('\x1B[0J');
-              // Print just the box (don't repeat the question line)
-              console.log(boxedResponse);
-              responseHeight = boxedResponse.split('\n').length;
-            }
-          };
-
-          // Custom spinner with lamb emojis
-          const lambEmojis = ['🐑', '🐑 🐑', '🐑 🐑 🐑', '🐑 🐑', '🐑'];
-          const spinner = ora({
-            text: chalk.dim('Thinking...'),
-            spinner: {
-              frames: lambEmojis,
-              interval: 300
-            },
-            color: 'yellow'
-          }).start();
-          
-          // Set up the callback and ask the question
-          answer = await askQuestionWithStreaming(
-            question,
-            (chunk) => {
-              // Stop the spinner on first chunk
-              if (partialResponse === '') {
-                spinner.stop();
-              }
-              handleStreamingChunk(chunk);
-            },
-            options.model,
-            options.provider,
-            options.baseUrl,
-            options.history, // Pass the history option
-            fileContent // Include file content if provided
-          );
-          
-          // Ensure final answer is displayed correctly
-          //@ts-ignore
-          parsedResponse = marked(String(answer)) as string;
-          boxedResponse = boxen(parsedResponse, {
-            padding: 1,
-            borderColor: 'green',
-            borderStyle: 'round',
-            title: isFirstChunk ? 'LLaMB' : '',  // Only show title if no streaming happened
-            titleAlignment: 'center',
-            width: maxWidth,
-          });
-
-          // For consistency, if we never had a chunk, display normally
-          // Otherwise, the streaming logic already showed the final state
-          if (isFirstChunk) {
-            console.log(chalk.dim('Asking: ') + question);
+            // Display the complete response once with no streaming artifacts
             console.log(boxedResponse);
+          } else {
+            // LIVE STREAMING MODE: show content as it arrives (may have scrollback artifacts)
+            let partialResponse = '';
+            let isFirstChunk = true;
+
+            // Custom spinner alternating between lamb and llama emojis
+            const animalEmojis = ['🐑', '🦙'];
+            const spinner = ora({
+              text: chalk.dim('Thinking...'),
+              spinner: {
+                frames: animalEmojis,
+                interval: 400
+              },
+              color: 'yellow'
+            }).start();
+
+            // Display the question once
+            console.log(chalk.dim('Asking: ') + question);
+
+            // Function to create a clean render of the response
+            const renderResponse = (content: string) => {
+              // Parse markdown
+              //@ts-ignore
+              const parsedContent = marked(content) as string;
+
+              // Create the boxed response
+              return boxen(parsedContent, {
+                padding: 1,
+                borderColor: 'green',
+                borderStyle: 'round',
+                title: 'LLaMB',
+                titleAlignment: 'center',
+                width: maxWidth,
+              });
+            };
+
+            // Track the state for terminal rendering
+            let lastOutputLines = 0;
+
+            // Process streaming content with live updates
+            const handleStreamingChunk = (chunk: string) => {
+              // Stop the spinner on first chunk
+              if (isFirstChunk) {
+                spinner.stop();
+                isFirstChunk = false;
+              }
+
+              // Accumulate the response
+              partialResponse += chunk;
+
+              // Render the response and store its line count
+              const rendered = renderResponse(partialResponse);
+              const renderedLines = rendered.split('\n').length;
+
+              // Logic for first render vs subsequent renders
+              if (lastOutputLines === 0) {
+                // First render after spinner stops
+                process.stdout.write(rendered + '\n');
+              } else {
+                // For subsequent renders:
+                // 1. Move cursor up to beginning of last output
+                process.stdout.write(`\x1B[${lastOutputLines}A`);
+                // 2. Clear screen from cursor down (removes old content)
+                process.stdout.write('\x1B[J');
+                // 3. Write new content
+                process.stdout.write(rendered + '\n');
+              }
+
+              // Store line count for next update
+              lastOutputLines = renderedLines;
+            };
+
+            // Set up the callback and ask the question
+            answer = await askQuestionWithStreaming(
+              question,
+              handleStreamingChunk,
+              options.model,
+              options.provider,
+              options.baseUrl,
+              options.history,
+              fileContent
+            );
           }
 
           // Handle file output
@@ -479,13 +555,13 @@ program
             }
           }
         } else {
-          // Non-streaming version - show spinner
-          const lambEmojis = ['🐑', '🐑 🐑', '🐑 🐑 🐑', '🐑 🐑', '🐑'];
+          // Non-streaming version - show spinner alternating between lamb and llama
+          const animalEmojis = ['🐑', '🦙'];
           const spinner = ora({
             text: chalk.dim('Thinking...'),
             spinner: {
-              frames: lambEmojis,
-              interval: 300
+              frames: animalEmojis,
+              interval: 400
             },
             color: 'yellow'
           }).start();
@@ -1009,6 +1085,53 @@ program.on('command:*', async (operands) => {
   console.log(chalk.yellow(`Unknown command: ${command}`));
   program.outputHelp();
 });
+
+// Add config management commands
+program
+  .command('config:progress-mode')
+  .description('Toggle progress-only mode (prevents scrollback artifacts)')
+  .option('--enable', 'Enable progress-only mode')
+  .option('--disable', 'Disable progress-only mode')
+  .option('--status', 'Show current setting status (default)')
+  .action((options) => {
+    try {
+      // Default to showing status if no action specified
+      const showStatus = !options.enable && !options.disable;
+
+      // Get current setting
+      const currentSetting = config.get('useProgressOnly');
+
+      if (options.enable) {
+        // Enable progress-only mode
+        config.set('useProgressOnly', true);
+        console.log(chalk.green('Progress-only mode has been enabled.'));
+        console.log(chalk.dim('This will prevent scrollback artifacts by not streaming content as it arrives.'));
+      } else if (options.disable) {
+        // Disable progress-only mode
+        config.set('useProgressOnly', false);
+        console.log(chalk.green('Progress-only mode has been disabled.'));
+        console.log(chalk.dim('Content will stream as it arrives (may have scrollback artifacts).'));
+      }
+
+      // Show status
+      if (showStatus || options.status) {
+        console.log(chalk.bold('Current setting:'));
+        if (currentSetting) {
+          console.log(chalk.green('✓ Progress-only mode is enabled'));
+          console.log(chalk.dim('Content is not streamed as it arrives, preventing scrollback artifacts.'));
+        } else {
+          console.log(chalk.yellow('✗ Progress-only mode is disabled'));
+          console.log(chalk.dim('Content streams as it arrives (may have scrollback artifacts).'));
+        }
+        console.log('');
+        console.log(chalk.cyan('To change this setting, use:'));
+        console.log('  llamb config:progress-mode --enable');
+        console.log('  llamb config:progress-mode --disable');
+      }
+    } catch (error: any) {
+      console.error(chalk.red('Error:'), error.message);
+    }
+  });
 
 // Add context management commands
 program

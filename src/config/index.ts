@@ -16,6 +16,7 @@ export interface LLMProvider {
 export interface ConfigSchema {
   providers: LLMProvider[];
   defaultProvider: string;
+  useProgressOnly: boolean;
 }
 
 const config = new Conf<ConfigSchema>({
@@ -42,6 +43,10 @@ const config = new Conf<ConfigSchema>({
       type: 'string',
       default: 'ollama', // Set default to local provider that doesn't need auth
     },
+    useProgressOnly: {
+      type: 'boolean',
+      default: false, // By default, stream content rather than showing progress-only
+    }
   },
 });
 
