@@ -2,3 +2,7 @@
 ## v1.0.1
 Fixes an issue with / commands
 
+
+## v1.0.2
+Fixes history and context when used locally
+
