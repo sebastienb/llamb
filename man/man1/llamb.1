@@ -1,4 +1,4 @@
-.TH LLAMB 1 "May 2024" "llamb 1.1.1" "User Commands"
+.TH LLAMB 1 "May 2024" "llamb 1.2.0" "User Commands"
 .SH NAME
 llamb \- CLI LLM client that answers questions directly from your terminal
 .SH SYNOPSIS
@@ -35,6 +35,9 @@ Use ink-based UI for rendering (prevents scrollback artifacts, default: enabled)
 .TP
 .B \-\-no\-ink
 Disable ink-based UI rendering and use traditional rendering
+.TP
+.B \-c, \-\-chat
+Enable continuous conversation mode for follow-up questions
 .TP
 .B \-n, \-\-no\-history
 Do not use conversation history for this request
@@ -91,7 +94,7 @@ Display terminal and session debugging information
 .B llamb config:progress-mode
 Configure UI rendering mode (ink, progress-only, or traditional)
 .SH SLASH COMMANDS
-Llamb supports short-form slash commands when entering questions:
+Llamb supports short-form slash commands when entering questions. In continuous conversation mode (-c), there are additional slash commands available:
 .TP
 .B /models
 Equivalent to "llamb models"
@@ -113,6 +116,18 @@ Equivalent to "llamb context:history"
 .TP
 .B /debug
 Equivalent to "llamb context:debug"
+.TP
+.B /exit, /quit
+Exit continuous conversation mode (available only in chat mode)
+.TP
+.B /file
+Attach a file to your next question (available only in chat mode)
+.TP
+.B /unfile
+Remove the attached file (available only in chat mode)
+.TP
+.B /help
+Show available commands in continuous conversation mode
 .SH EXAMPLES
 .TP
 Ask a simple question:
@@ -129,6 +144,9 @@ Save response (prompts for filename):
 .TP
 Save response to a specific file:
 .B llamb "Generate JSON" -o result.json
+.TP
+Start in continuous conversation mode for follow-up questions:
+.B llamb -c "Tell me about TypeScript"
 .TP
 Ask without using conversation history:
 .B llamb -n "What is 2+2?"

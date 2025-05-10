@@ -6,6 +6,7 @@ LLaMB is a command-line tool that allows you to interact with Large Language Mod
 
 - 🚀 **Fast** - Get answers directly in your terminal without leaving your workflow
 - 💬 **Conversation history** - Follow-up on previous questions with context
+- 🔄 **Continuous conversation** - Interactive chat mode for follow-up questions
 - 📄 **File handling** - Include file contents in your questions and save responses to files
 - 🔄 **Multiple providers** - Support for OpenAI, Anthropic, Mistral, Ollama, and more
 - 🔐 **Secure** - API keys stored securely in your system's credential manager
@@ -114,6 +115,30 @@ If a file already exists, you'll be asked whether to:
 - Overwrite the existing file
 - Generate a new filename automatically (e.g., `file-1.txt`)
 - Cancel the save operation
+
+### Continuous Conversation Mode
+
+LLaMB provides an interactive chat mode that allows you to have back-and-forth conversations with the model:
+
+```bash
+llamb -c "Tell me about TypeScript"
+```
+
+After receiving the initial response, you'll be prompted for follow-up questions:
+
+```
+🦙 Follow-up question (type /exit to end conversation):
+```
+
+You can type your follow-up questions, or use special commands:
+
+- `/exit` or `/quit` - End the conversation and exit
+- `/clear` - Clear conversation history
+- `/new` - Start a new conversation
+- `/history` - View conversation history
+- `/file` - Attach a file to your next question
+- `/unfile` - Remove the attached file
+- `/help` - Show available commands
 
 ### Conversation History
 
