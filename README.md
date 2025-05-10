@@ -10,6 +10,7 @@ LLaMB is a command-line tool that allows you to interact with Large Language Mod
 - 🔄 **Multiple providers** - Support for OpenAI, Anthropic, Mistral, Ollama, and more
 - 🔐 **Secure** - API keys stored securely in your system's credential manager
 - 🖥️ **Local models** - Works with local models like Ollama and LM Studio
+- 🎨 **React-based UI** - Clean, artifact-free terminal interface using ink
 
 ## Installation
 
@@ -216,6 +217,55 @@ llamb -m gpt-4 -p openai how do I install nginx on Ubuntu?
 
 ```bash
 llamb -u http://localhost:8080/v1 what is the meaning of life?
+```
+
+### Terminal UI Options
+
+LLaMB provides different UI rendering options to handle different terminal environments:
+
+#### Use ink-based UI (default)
+
+LLaMB uses a React-based terminal UI powered by ink, which provides a clean,
+artifact-free interface with proper rendering:
+
+```bash
+# ink is the default, so no flag is needed
+llamb "What is the history of the internet?"
+
+# You can explicitly enable it with
+llamb --ink "What is the history of the internet?"
+```
+
+#### Disable ink for traditional rendering
+
+In some terminal environments, you might want to fall back to traditional rendering:
+
+```bash
+llamb --no-ink "What is the history of the internet?"
+```
+
+#### Use progress-only mode
+
+If you're experiencing issues with scrollback artifacts in your terminal:
+
+```bash
+llamb --progress-only "What is the history of the internet?"
+```
+
+#### Configure terminal UI defaults
+
+```bash
+# Set ink UI as default (already the default)
+llamb config:progress-mode --ink
+
+# Use traditional rendering with real-time streaming
+llamb config:progress-mode --disable
+
+# Use progress-only mode (no streaming)
+llamb config:progress-mode --enable
+
+# View current settings
+llamb config:progress-mode
 ```
 
 #### Combine options for maximum flexibility

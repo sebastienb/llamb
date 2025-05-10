@@ -17,6 +17,7 @@ export interface ConfigSchema {
   providers: LLMProvider[];
   defaultProvider: string;
   useProgressOnly: boolean;
+  useInkUI: boolean;
 }
 
 const config = new Conf<ConfigSchema>({
@@ -46,6 +47,10 @@ const config = new Conf<ConfigSchema>({
     useProgressOnly: {
       type: 'boolean',
       default: false, // By default, stream content rather than showing progress-only
+    },
+    useInkUI: {
+      type: 'boolean',
+      default: true, // Use the ink UI by default
     }
   },
 });

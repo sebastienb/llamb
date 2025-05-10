@@ -32,6 +32,9 @@
     "conf": "^13.1.0",
     "dotenv": "^16.5.0",
     "highlight.js": "^11.11.1",
+    "ink": "^4.4.1",
+    "ink-box": "^1.0.0",
+    "ink-spinner": "^5.0.0",
     "inquirer": "^12.6.0",
     "keytar": "^7.9.0",
     "marked": "^15.0.11",
@@ -39,6 +42,8 @@
     "node-fetch": "^2.7.0",
     "openai": "^4.98.0",
     "ora": "^8.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "terminal-link": "^4.0.0",
     "word-wrap": "^1.2.5"
   },
@@ -46,6 +51,8 @@
     "@types/marked": "^5.0.2",
     "@types/marked-terminal": "^6.1.1",
     "@types/node": "^22.15.17",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
   },

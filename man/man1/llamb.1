@@ -24,6 +24,18 @@ Specify a custom base URL for this request
 .B \-s, \-\-stream
 Stream the response as it arrives (default: true)
 .TP
+.B \-\-progress\-only
+Show progress indicator without streaming content (prevents scrollback artifacts)
+.TP
+.B \-\-live\-stream
+Force live streaming of content even if progress-only mode is enabled
+.TP
+.B \-\-ink
+Use ink-based UI for rendering (prevents scrollback artifacts, default: enabled)
+.TP
+.B \-\-no\-ink
+Disable ink-based UI rendering and use traditional rendering
+.TP
 .B \-n, \-\-no\-history
 Do not use conversation history for this request
 .TP
@@ -75,6 +87,9 @@ Display the current conversation history
 .TP
 .B llamb context:debug
 Display terminal and session debugging information
+.TP
+.B llamb config:progress-mode
+Configure UI rendering mode (ink, progress-only, or traditional)
 .SH SLASH COMMANDS
 Llamb supports short-form slash commands when entering questions:
 .TP
@@ -135,6 +150,18 @@ Change the default model for current provider:
 .TP
 Change the default model for a specific provider:
 .B llamb model:default -p openai
+.TP
+Use ink-based UI (default):
+.B llamb "What is the capital of France?"
+.TP
+Disable ink-based UI and use traditional rendering:
+.B llamb --no-ink "What is the capital of France?"
+.TP
+Use progress-only mode to prevent scrollback artifacts:
+.B llamb --progress-only "What is the capital of France?"
+.TP
+Configure UI rendering mode:
+.B llamb config:progress-mode --ink
 .SH ENVIRONMENT
 .TP
 .B OPENAI_API_KEY

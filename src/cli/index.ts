@@ -22,6 +22,7 @@ import { KeyManager } from '../utils/keyManager.js';
 import { SessionManager } from '../services/sessionManager.js';
 import { readFile, writeFile, fileExists, generateUniqueFilename } from '../utils/fileUtils.js';
 import config from '../config/index.js';
+import { renderStreamingResponse } from '../components/StreamingResponse.js';
 
 // Check for required system dependencies
 function checkDependencies() {
@@ -79,6 +80,8 @@ program
   .option('-s, --stream', 'Stream the response as it arrives (default: true)')
   .option('--progress-only', 'Show progress indicator without streaming content (prevents scrollback artifacts)')
   .option('--live-stream', 'Force live streaming of content even if progress-only mode is enabled')
+  .option('--ink', 'Use ink-based UI for rendering (prevents scrollback artifacts)')
+  .option('--no-ink', 'Disable ink-based UI rendering (use traditional rendering)')
   .option('-n, --no-history', 'Do not use conversation history for this request')
   .option('-f, --file <path>', 'Path to a file to include with your question')
   .option('-o, --output [path]', 'Save the response to a file (will prompt for filename)')
@@ -386,11 +389,44 @@ program
         const useProgressOnly = options.liveStream === true ? false :
                               (options.progressOnly === true ||
                               (options.progressOnly !== false && config.get('useProgressOnly')));
-        
+
+        // Check if we should use the ink-based UI (enabled by default, can be disabled with --no-ink)
+        const useInkUI = options.ink !== false && config.get('useInkUI') === true;
+
         let answer: string;
         
         if (shouldStream) {
-          if (useProgressOnly) {
+          // If using Ink UI, it handles the streaming display
+          if (useInkUI) {
+            // Create a streaming function for Ink to consume
+            const streamingFunction = (onChunk: (chunk: string) => void) => {
+              return askQuestionWithStreaming(
+                question,
+                onChunk,
+                options.model,
+                options.provider,
+                options.baseUrl,
+                options.history,
+                fileContent
+              );
+            };
+
+            // Use the ink-based UI for display
+            renderStreamingResponse(question, streamingFunction, (fullResponse: string) => {
+              answer = fullResponse;
+              // Handle file output when complete
+              if (options.output !== undefined) {
+                try {
+                  handleFileOutput(answer, options.output, options.overwrite);
+                } catch (error: any) {
+                  console.error(chalk.red(`Error saving response: ${error.message}`));
+                }
+              }
+            });
+
+            // Early return since ink handles its own rendering
+            return;
+          } else if (useProgressOnly) {
             // PROGRESS-ONLY MODE: collect response and only render at the end
             // This eliminates all scrollback issues
             let partialResponse = '';
@@ -1092,41 +1128,60 @@ program
   .description('Toggle progress-only mode (prevents scrollback artifacts)')
   .option('--enable', 'Enable progress-only mode')
   .option('--disable', 'Disable progress-only mode')
+  .option('--ink', 'Use ink-based UI (experimental)')
   .option('--status', 'Show current setting status (default)')
   .action((options) => {
     try {
       // Default to showing status if no action specified
-      const showStatus = !options.enable && !options.disable;
+      const showStatus = !options.enable && !options.disable && !options.ink;
 
-      // Get current setting
-      const currentSetting = config.get('useProgressOnly');
+      // Get current settings
+      const currentProgressSetting = config.get('useProgressOnly');
+      const currentInkSetting = config.get('useInkUI');
 
       if (options.enable) {
         // Enable progress-only mode
         config.set('useProgressOnly', true);
+        // Disable ink when enabling progress-only mode
+        config.set('useInkUI', false);
         console.log(chalk.green('Progress-only mode has been enabled.'));
         console.log(chalk.dim('This will prevent scrollback artifacts by not streaming content as it arrives.'));
       } else if (options.disable) {
         // Disable progress-only mode
         config.set('useProgressOnly', false);
+        // Also disable ink when disabling progress-only mode
+        config.set('useInkUI', false);
         console.log(chalk.green('Progress-only mode has been disabled.'));
         console.log(chalk.dim('Content will stream as it arrives (may have scrollback artifacts).'));
+      } else if (options.ink) {
+        // Enable ink UI mode
+        config.set('useInkUI', true);
+        // Disable progress-only mode when enabling ink
+        config.set('useProgressOnly', false);
+        console.log(chalk.green('Ink-based UI has been enabled.'));
+        console.log(chalk.dim('Using React-based terminal UI, which prevents scrollback artifacts.'));
       }
 
       // Show status
       if (showStatus || options.status) {
-        console.log(chalk.bold('Current setting:'));
-        if (currentSetting) {
+        console.log(chalk.bold('Current settings:'));
+
+        if (currentInkSetting) {
+          console.log(chalk.green('✓ Ink-based UI is enabled'));
+          console.log(chalk.dim('Using React-based terminal UI to prevent scrollback artifacts.'));
+        } else if (currentProgressSetting) {
           console.log(chalk.green('✓ Progress-only mode is enabled'));
           console.log(chalk.dim('Content is not streamed as it arrives, preventing scrollback artifacts.'));
         } else {
           console.log(chalk.yellow('✗ Progress-only mode is disabled'));
           console.log(chalk.dim('Content streams as it arrives (may have scrollback artifacts).'));
         }
+
         console.log('');
-        console.log(chalk.cyan('To change this setting, use:'));
-        console.log('  llamb config:progress-mode --enable');
-        console.log('  llamb config:progress-mode --disable');
+        console.log(chalk.cyan('To change these settings, use:'));
+        console.log('  llamb config:progress-mode --enable   (progress-only mode)');
+        console.log('  llamb config:progress-mode --ink      (experimental ink UI)');
+        console.log('  llamb config:progress-mode --disable  (live streaming)');
       }
     } catch (error: any) {
       console.error(chalk.red('Error:'), error.message);
