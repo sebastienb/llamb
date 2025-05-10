@@ -36,10 +36,13 @@ if ! git rev-parse "$new_version" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Step 7: Save previous version
+# Step 7: Update man page version
+sed -i '' "s/llamb [0-9]*\.[0-9]*\.[0-9]*/llamb ${new_version#v}/" man/man1/llamb.1
+
+# Step 8: Save previous version
 echo "$current_version" > previous-version.txt
 
-# Step 8: Append changelog entry
+# Step 9: Append changelog entry
 {
   echo ""
   echo "## $new_version"
@@ -47,12 +50,12 @@ echo "$current_version" > previous-version.txt
   echo ""
 } >> CHANGELOG.txt
 
-# Step 9: Commit and push
-git add package.json package-lock.json previous-version.txt CHANGELOG.txt
+# Step 10: Commit and push
+git add package.json package-lock.json previous-version.txt CHANGELOG.txt man/man1/llamb.1
 git commit --amend --no-edit
 git push --follow-tags
 
-# Step 10: Publish to NPM
+# Step 11: Publish to NPM
 npm publish
 
 echo ""

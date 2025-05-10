@@ -50,10 +50,14 @@ const program = new Command();
 // This provides an early warning to users
 checkDependencies();
 
+// Read package version
+import { readFileSync } from 'fs';
+const packageJson = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+
 program
   .name('llamb')
   .description('CLI LLM client that answers questions directly from your terminal')
-  .version('1.0.0')
+  .version(packageJson.version)
   .addHelpText('after', `
 Examples:
   $ llamb "What is the capital of France?"     Ask a simple question
