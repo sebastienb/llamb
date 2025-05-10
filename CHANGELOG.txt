@@ -22,3 +22,7 @@ Added continuous conversation mode with the following features:
 - Preserves conversation context between messages for more natural interactions
 - Improved response handling for streaming content
 
+
+## v2.0.0
+Added React-based CLI UI, conversation mode, progress-only mode, and live streaming. Improved session handling, file I/O, and first run provider setup.
+
