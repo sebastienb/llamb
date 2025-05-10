@@ -3,10 +3,9 @@ import config, { LLMProvider } from '../config/index.js';
 import { KeyManager } from '../utils/keyManager.js';
 import { SessionManager, Message } from './sessionManager.js';
 
-// Initialize OpenAI API with the OpenAI API key from environment if available
-if (process.env.OPENAI_API_KEY) {
-  KeyManager.storeApiKey('openai', process.env.OPENAI_API_KEY);
-}
+// We no longer automatically set API keys from environment variables.
+// Users should explicitly set them using the provider:add or provider:apikey commands.
+// This gives users more control and visibility over their configuration.
 
 export async function getModels(providerName?: string): Promise<string[]> {
   const provider = await getProviderWithApiKey(providerName);
@@ -57,7 +56,8 @@ export async function askQuestionWithStreaming(
   providerName?: string,
   customBaseUrl?: string,
   useHistory: boolean = true,
-  fileContent?: string
+  fileContent?: string,
+  abortController?: AbortController
 ): Promise<string> {
   const provider = await getProviderWithApiKey(providerName);
   const model = modelName || provider.defaultModel;
@@ -108,18 +108,39 @@ export async function askQuestionWithStreaming(
     if (streamCallback) {
       let fullResponse = '';
 
-      const stream = await openai.chat.completions.create({
-        model,
-        messages,
-        stream: true,
-      });
+      // Create a local AbortController if none was provided
+      const localAbortController = abortController || new AbortController();
 
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || '';
-        if (content) {
-          streamCallback(content);
-          fullResponse += content;
+      try {
+        // Create options object with the abort signal
+        const requestOptions = {
+          signal: localAbortController.signal
+        };
+
+        const stream = await openai.chat.completions.create({
+          model,
+          messages,
+          stream: true,
+        }, requestOptions);
+
+        for await (const chunk of stream) {
+          // Check if aborted before processing chunk
+          if (localAbortController.signal.aborted) {
+            break;
+          }
+
+          const content = chunk.choices[0]?.delta?.content || '';
+          if (content) {
+            streamCallback(content);
+            fullResponse += content;
+          }
         }
+      } catch (error: any) {
+        // If the error is due to abort, just return the response so far
+        if (error.name === 'AbortError' || localAbortController.signal.aborted) {
+          return fullResponse;
+        }
+        throw error;
       }
 
       // Save the assistant's response to the session

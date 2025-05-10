@@ -176,6 +176,37 @@ export class SessionManager {
   }
 
   /**
+   * Clear all sessions for this user
+   */
+  public clearAllSessions(): void {
+    // Clear current session
+    this.clearSession();
+
+    // Clear all session data from config
+    this.conf.clear();
+
+    // Try to delete all session files
+    try {
+      const fs = require('fs');
+      const path = require('path');
+
+      // Read all files in the sessions directory
+      if (fs.existsSync(this.sessionsPath)) {
+        const files = fs.readdirSync(this.sessionsPath);
+
+        // Delete each file
+        for (const file of files) {
+          if (file.endsWith('.json')) {
+            fs.unlinkSync(path.join(this.sessionsPath, file));
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to delete session files:', error);
+    }
+  }
+
+  /**
    * Create a new session and make it the current one
    */
   public createNewSession(): Session {

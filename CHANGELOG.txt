@@ -8,9 +8,17 @@ Fixes history and context when used locally
 
 
 ## v1.1.0
-Upodated how streaming responses are rendered so users can scroll up wihtout any artifacts.
+Updated how streaming responses are rendered so users can scroll up without any artifacts.
 
 
 ## v1.1.1
 Minor bug fix on version number listed in the app
+
+
+## v1.2.0
+Added continuous conversation mode with the following features:
+- Use -c/--chat flag to enable follow-up questions in the same session
+- Added special commands in chat mode (/exit, /quit, /clear, /new, /history, /file, /unfile)
+- Preserves conversation context between messages for more natural interactions
+- Improved response handling for streaming content
 

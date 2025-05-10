@@ -52,6 +52,7 @@ checkDependencies();
 
 // Read package version
 import { readFileSync } from 'fs';
+import * as readline from 'readline';
 const packageJson = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
 
 program
@@ -66,6 +67,7 @@ Examples:
   $ llamb "Generate JSON" -o                   Save response (prompts for filename)
   $ llamb "Generate JSON" -o result.json       Save response to a specific file
   $ llamb -n "What is 2+2?"                    Ask without using conversation history
+  $ llamb -c "Tell me about France"            Start in continuous conversation mode
   $ llamb /history                             View conversation history
   $ llamb /clear                               Clear conversation history
   $ llamb /new                                 Start a new conversation
@@ -78,6 +80,8 @@ Examples:
 program
   .arguments('[question...]')
   .description('Ask a question to the LLM')
+  .option('-c, --chat', 'Enable continuous conversation mode for follow-up questions')
+  .option('--no-chat', 'Disable continuous conversation mode (default)')
   .option('-m, --model <model>', 'Specify the model to use')
   .option('-p, --provider <provider>', 'Specify the provider to use')
   .option('-u, --baseUrl <baseUrl>', 'Specify a custom base URL for this request')
@@ -345,7 +349,6 @@ program
       }
 
       const question = args.join(' ');
-      console.log(chalk.dim('Asking: ') + question);
 
       // Handle file input if provided
       let fileContent: string | undefined;
@@ -360,22 +363,63 @@ program
         }
       }
 
+      // If continuous conversation mode is enabled, use the specialized function
+      if (options.chat) {
+        console.log(chalk.dim('Starting continuous conversation mode...'));
+        await startContinuousConversation(question, options, fileContent);
+        return;
+      }
+
+      // Normal one-off question mode
+      console.log(chalk.dim('Asking: ') + question);
+
       try {
+        // Get list of providers and check if any exist
+        const providers = getProviders();
+        const defaultProviderName = getDefaultProvider();
+
+        // If no providers are configured or no default provider is set
+        if (providers.length === 0 || !defaultProviderName) {
+          console.log(chalk.yellow('⚠️  No providers configured yet.'));
+          console.log('');
+
+          // Provide helpful setup instructions without auto-launching anything
+          console.log(chalk.cyan('To add a provider, you have several options:'));
+          console.log('');
+          console.log(chalk.bold('Option 1: Interactive setup (recommended for first-time users)'));
+          console.log(chalk.bold('  llamb provider:add'));
+          console.log('');
+          console.log(chalk.bold('Option 2: Non-interactive setup for OpenAI'));
+          console.log(chalk.bold('  llamb provider:add --name openai --url https://api.openai.com/v1 --model gpt-3.5-turbo --key YOUR_API_KEY'));
+          console.log('');
+          console.log(chalk.bold('Option 3: Non-interactive setup for Ollama (if installed locally)'));
+          console.log(chalk.bold('  llamb provider:add --name ollama --url http://localhost:11434/v1 --model llama2'));
+          console.log('');
+          console.log(chalk.cyan('After adding a provider, you can try your question again:'));
+          console.log(chalk.bold(`  llamb "${question}"`));
+          return;
+        }
+
         // Check if the provider has a valid API key if needed
         const provider = await getProviderWithApiKey(options.provider);
-        
+
         if (!provider.noAuth && !provider.apiKey) {
           console.log(chalk.yellow(`⚠️  Provider '${provider.name}' requires an API key but none is set.`));
-          console.log(chalk.cyan('To add an API key, run: ') + chalk.bold('llamb provider:apikey'));
-          console.log(chalk.cyan('To add a new provider, run: ') + chalk.bold('llamb provider:add'));
-          console.log(chalk.cyan('To list available providers, run: ') + chalk.bold('llamb providers'));
+          console.log(chalk.cyan('To add an API key interactively, run:'));
+          console.log(chalk.bold('  llamb provider:apikey'));
+          console.log(chalk.cyan('To add an API key non-interactively, run:'));
+          console.log(chalk.bold(`  llamb provider:apikey --provider ${provider.name} --key YOUR_API_KEY`));
+          console.log(chalk.cyan('To add a new provider, run:'));
+          console.log(chalk.bold('  llamb provider:add'));
+          console.log(chalk.cyan('To list available providers, run:'));
+          console.log(chalk.bold('  llamb providers'));
           console.log('');
-          
-          // Check if Ollama is available as a fallback
-          const ollama = getProviders().find(p => p.name === 'ollama');
-          if (ollama) {
-            console.log(chalk.green(`You can use local Ollama provider without an API key:`));
-            console.log(chalk.bold(`llamb -p ollama "${question}"`));
+
+          // Check if any local provider is available as a fallback
+          const localProviders = providers.filter(p => p.noAuth === true);
+          if (localProviders.length > 0) {
+            console.log(chalk.green(`You can use a local provider without an API key, for example:`));
+            console.log(chalk.bold(`llamb -p ${localProviders[0].name} "${question}"`));
           }
           return;
         }
@@ -402,6 +446,9 @@ program
         if (shouldStream) {
           // If using Ink UI, it handles the streaming display
           if (useInkUI) {
+            // Create an AbortController for cancellation support
+            const abortController = new AbortController();
+
             // Create a streaming function for Ink to consume
             const streamingFunction = (onChunk: (chunk: string) => void) => {
               return askQuestionWithStreaming(
@@ -411,21 +458,38 @@ program
                 options.provider,
                 options.baseUrl,
                 options.history,
-                fileContent
+                fileContent,
+                abortController
               );
             };
 
-            // Use the ink-based UI for display
-            renderStreamingResponse(question, streamingFunction, (fullResponse: string) => {
-              answer = fullResponse;
-              // Handle file output when complete
-              if (options.output !== undefined) {
-                try {
-                  handleFileOutput(answer, options.output, options.overwrite);
-                } catch (error: any) {
-                  console.error(chalk.red(`Error saving response: ${error.message}`));
+            // Use the ink-based UI for display with cancellation support
+            const unmount = renderStreamingResponse(
+              question,
+              streamingFunction,
+              (fullResponse: string) => {
+                answer = fullResponse;
+                // Handle file output when complete
+                if (options.output !== undefined) {
+                  try {
+                    handleFileOutput(answer, options.output, options.overwrite);
+                  } catch (error: any) {
+                    console.error(chalk.red(`Error saving response: ${error.message}`));
+                  }
                 }
-              }
+              },
+              abortController
+            );
+
+            // Handle Ctrl+C during streaming
+            process.on('SIGINT', () => {
+              // Abort the request
+              abortController.abort();
+              // Unmount the UI
+              unmount();
+              console.log(chalk.red('\nRequest cancelled by user'));
+              // Exit when done
+              exitWhenDone();
             });
 
             // Early return since ink handles its own rendering
@@ -614,7 +678,7 @@ program
           
           // Make sure answer is a string before parsing markdown
           const answerText = typeof answer === 'string' ? answer : String(answer);
-          
+
           // Parse markdown and apply syntax highlighting
           // Need to cast result to string since marked types are problematic
           //@ts-ignore
@@ -629,7 +693,7 @@ program
             titleAlignment: 'center',
             width: maxWidth,
           });
-          
+
           console.log(boxedAnswer);
 
           // Handle file output
@@ -640,14 +704,25 @@ program
               console.error(chalk.red(`Error saving response: ${error.message}`));
             }
           }
+
+          // Exit when done in non-chat mode
+          if (!options.chat) {
+            exitWhenDone();
+          }
         }
       } catch (error: any) {
         if (error.message.includes('No API key found') || 
             error.message.includes('Failed to get response from')) {
           // Provide helpful setup instructions
           console.log(chalk.yellow('⚠️  You need to configure an LLM provider before using llamb.'));
-          console.log(chalk.cyan('To add a provider, run: ') + chalk.bold('llamb provider:add'));
-          console.log(chalk.cyan('To set up an API key, run: ') + chalk.bold('llamb provider:apikey'));
+          console.log(chalk.cyan('To add a provider non-interactively, run:'));
+          console.log(chalk.bold('  llamb provider:add --name openai --url https://api.openai.com/v1 --model gpt-3.5-turbo'));
+          console.log(chalk.cyan('OR'));
+          console.log(chalk.bold('  llamb provider:add --name ollama --url http://localhost:11434/v1 --model llama2'));
+          console.log(chalk.cyan('To add a provider interactively, run:'));
+          console.log(chalk.bold('  llamb provider:add'));
+          console.log(chalk.cyan('To set up an API key, run:'));
+          console.log(chalk.bold('  llamb provider:apikey --provider openai --key YOUR_API_KEY'));
           
           // Check if Ollama is configured
           const providers = getProviders();
@@ -664,6 +739,11 @@ program
       }
     } catch (error: any) {
       console.error(chalk.red('Error:'), error.message);
+
+      // Exit when done in non-chat mode with error code
+      if (!options.chat) {
+        exitWhenDone(1); // Exit with error code 1
+      }
     }
   });
 
@@ -776,10 +856,89 @@ const commonProviders = [
 program
   .command('provider:add')
   .description('Add or update a provider configuration')
-  .action(async () => {
+  .option('--name <name>', 'Provider name (e.g., openai, anthropic, ollama)')
+  .option('--url <url>', 'Base URL for the provider')
+  .option('--key <apiKey>', 'API key for the provider (can be omitted for local providers)')
+  .option('--model <model>', 'Default model for the provider')
+  .action(async (options) => {
     try {
       // Check dependencies at the beginning
       const depsOk = checkDependencies();
+
+      // Check if we're in non-interactive mode with all options provided
+      if (options.name && options.url) {
+        // Non-interactive mode
+        console.log(chalk.green(`Setting up provider '${options.name}' in non-interactive mode...`));
+
+        // Validate URL
+        try {
+          new URL(options.url);
+        } catch (e) {
+          console.error(chalk.red('Invalid URL format'));
+          return;
+        }
+
+        // For local providers, mark them as noAuth
+        const isLocalProvider = !options.key &&
+          (options.name === 'ollama' ||
+           options.name === 'lmstudio' ||
+           options.url.includes('localhost') ||
+           options.url.includes('127.0.0.1'));
+
+        // If no model is provided, use defaults based on provider name
+        let defaultModel = options.model || '';
+        if (!defaultModel) {
+          // Try to find a default model for known providers
+          const knownProvider = commonProviders.find(p => p.value === options.name);
+          defaultModel = knownProvider?.defaultModel || '';
+
+          if (!defaultModel) {
+            // Fallbacks for common providers
+            if (options.name === 'openai') defaultModel = 'gpt-3.5-turbo';
+            else if (options.name === 'anthropic') defaultModel = 'claude-3-sonnet-20240229';
+            else if (options.name === 'mistral') defaultModel = 'mistral-medium';
+            else if (options.name === 'ollama') defaultModel = 'llama2';
+            else defaultModel = 'default'; // Generic fallback
+          }
+        }
+
+        const answers = {
+          name: options.name,
+          baseUrl: options.url,
+          apiKey: options.key || '',
+          defaultModel: defaultModel,
+          noAuth: isLocalProvider
+        };
+
+        // Store provider info and API key
+        try {
+          await addProvider(answers);
+
+          // Set this provider as the default
+          const currentDefault = getDefaultProvider();
+          if (currentDefault !== answers.name) {
+            setDefaultProvider(answers.name);
+            console.log(chalk.green(`Provider '${answers.name}' added successfully and set as default provider`));
+          } else {
+            console.log(chalk.green(`Provider '${answers.name}' added successfully`));
+          }
+
+          if (answers.apiKey) {
+            console.log(chalk.green('API key has been stored securely in your system keychain'));
+          }
+          return;
+        } catch (error: any) {
+          if (error.message.includes('Missing system dependencies')) {
+            console.log(chalk.yellow('Provider configuration saved but API key storage failed.'));
+            console.log(chalk.yellow('Please install the required dependencies and try again.'));
+          } else {
+            throw error;
+          }
+          return;
+        }
+      }
+
+      // Interactive mode if not all options were provided
       // First select from common providers or custom
       const providerSelection = await inquirer.prompt([
         {
@@ -789,9 +948,9 @@ program
           choices: commonProviders.map(p => ({ name: p.name, value: p.value })),
         }
       ]);
-      
+
       const selectedProvider = commonProviders.find(p => p.value === providerSelection.provider);
-      
+
       // Then collect provider details, with pre-filled defaults
       const providerInfo = await inquirer.prompt([
         {
@@ -825,32 +984,32 @@ program
           validate: (input) => selectedProvider?.requiresApiKey && input.length === 0 ? 'API Key is required for this provider' : true,
         }
       ]);
-      
+
       // Try to fetch available models
       console.log(chalk.dim('Fetching available models...'));
-      
+
       let availableModels: string[] = [];
-      
+
       try {
         // Create temporary OpenAI client to fetch models
         const openai = new OpenAI({
           apiKey: providerInfo.apiKey || 'dummy-key',
           baseURL: providerInfo.baseUrl,
         });
-        
+
         const models = await openai.models.list();
         availableModels = models.data.map(model => model.id);
-        
+
         if (availableModels.length > 0) {
           console.log(chalk.green(`Found ${availableModels.length} available models!`));
         }
       } catch (error) {
         console.log(chalk.yellow('Could not fetch models. You will need to enter the model name manually.'));
       }
-      
+
       // Now prompt for model selection
       let defaultModelAnswer: { defaultModel: string };
-      
+
       if (availableModels.length > 0) {
         defaultModelAnswer = await inquirer.prompt({
           type: 'list',
@@ -867,17 +1026,17 @@ program
           validate: (input: string) => input.length > 0 ? true : 'Default model cannot be empty',
         });
       }
-      
+
       // For local providers, mark them as noAuth
-      const isLocalProvider = !providerInfo.apiKey && 
-        (selectedProvider?.value === 'ollama' || 
-         selectedProvider?.value === 'lmstudio' || 
-         providerInfo.baseUrl.includes('localhost') || 
+      const isLocalProvider = !providerInfo.apiKey &&
+        (selectedProvider?.value === 'ollama' ||
+         selectedProvider?.value === 'lmstudio' ||
+         providerInfo.baseUrl.includes('localhost') ||
          providerInfo.baseUrl.includes('127.0.0.1'));
-      
-      const answers = { 
-        name: providerInfo.name, 
-        baseUrl: providerInfo.baseUrl, 
+
+      const answers = {
+        name: providerInfo.name,
+        baseUrl: providerInfo.baseUrl,
         apiKey: providerInfo.apiKey,
         defaultModel: defaultModelAnswer.defaultModel,
         noAuth: isLocalProvider
@@ -886,8 +1045,16 @@ program
       // Store provider info and API key securely
       try {
         await addProvider(answers);
-        
-        console.log(chalk.green(`Provider '${answers.name}' added/updated successfully`));
+
+        // Set this provider as the default
+        const currentDefault = getDefaultProvider();
+        if (currentDefault !== answers.name) {
+          setDefaultProvider(answers.name);
+          console.log(chalk.green(`Provider '${answers.name}' added/updated successfully and set as default provider`));
+        } else {
+          console.log(chalk.green(`Provider '${answers.name}' added/updated successfully`));
+        }
+
         if (answers.apiKey) {
           console.log(chalk.green('API key has been stored securely in your system keychain'));
         }
@@ -908,7 +1075,9 @@ program
 program
   .command('provider:apikey')
   .description('Update API key for a provider')
-  .action(async () => {
+  .option('--provider <provider>', 'Provider name')
+  .option('--key <apiKey>', 'API key for the provider')
+  .action(async (options) => {
     try {
       // Check dependencies at the beginning
       const depsOk = checkDependencies();
@@ -922,15 +1091,35 @@ program
         console.log(chalk.yellow('No providers configured. Add a provider first.'));
         return;
       }
-      
+
+      // Check if we're in non-interactive mode with all options provided
+      console.log(chalk.dim(`Debug - provider: ${options.provider}, key: ${options.key ? 'provided' : 'not provided'}`));
+      if (options.provider && options.key) {
+        // Non-interactive mode
+        console.log(chalk.green(`Setting API key for provider '${options.provider}' in non-interactive mode...`));
+
+        // Verify the provider exists
+        const provider = providers.find(p => p.name === options.provider);
+        if (!provider) {
+          console.error(chalk.red(`Provider '${options.provider}' not found.`));
+          return;
+        }
+
+        // Store API key securely
+        await KeyManager.storeApiKey(options.provider, options.key);
+        console.log(chalk.green(`API key for '${options.provider}' updated successfully`));
+        return;
+      }
+
+      // Interactive mode
       // Filter out providers marked as noAuth
       const authProviders = providers.filter(p => !p.noAuth);
-      
+
       if (authProviders.length === 0) {
         console.log(chalk.yellow('No providers requiring authentication found.'));
         return;
       }
-      
+
       // Choose provider
       const answers = await inquirer.prompt([
         {
@@ -1192,6 +1381,67 @@ program
     }
   });
 
+// Add reset/delete command
+program
+  .command('reset')
+  .description('Reset all data (providers, settings, and conversation history)')
+  .action(async () => {
+    try {
+      console.log(chalk.yellow('⚠️  This will delete all LLaMB data:'));
+      console.log('');
+      console.log('  - All provider configurations');
+      console.log('  - All API keys stored in your system keychain');
+      console.log('  - All conversation history');
+      console.log('  - All UI preferences and settings');
+      console.log('');
+
+      // Ask for confirmation
+      const answer = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'confirm',
+          message: 'Are you sure you want to delete all LLaMB data?',
+          default: false,
+        }
+      ]);
+
+      if (!answer.confirm) {
+        console.log(chalk.cyan('Reset cancelled.'));
+        return;
+      }
+
+      // Delete all data
+      try {
+        // Clear provider configurations and settings
+        config.clear();
+
+        // Reinitialize with empty defaults to ensure proper schema
+        config.set('providers', []);
+        config.set('defaultProvider', '');
+        config.set('useProgressOnly', false);
+        config.set('useInkUI', true);
+
+        // Clear all conversation sessions
+        const sessionManager = SessionManager.getInstance();
+        sessionManager.clearAllSessions();
+
+        // Clear API keys for all providers
+        const providers = getProviders();
+        for (const provider of providers) {
+          await KeyManager.deleteApiKey(provider.name);
+        }
+
+        console.log(chalk.green('✓ All LLaMB data has been deleted successfully.'));
+        console.log(chalk.green('You can start fresh by running:'));
+        console.log(chalk.bold('  llamb "your question"'));
+      } catch (error: any) {
+        console.error(chalk.red('Error during reset:'), error.message);
+      }
+    } catch (error: any) {
+      console.error(chalk.red('Error:'), error.message);
+    }
+  });
+
 // Add context management commands
 program
   .command('context:clear')
@@ -1267,6 +1517,48 @@ program
     }
   });
 
+/**
+ * Explicit function to exit the app in non-chat mode
+ * This ensures consistent behavior across all code paths
+ * @param exitCode Optional exit code (0 for success, non-zero for errors)
+ */
+function exitWhenDone(exitCode: number = 0) {
+  if (!process.env.LLAMB_DEBUG) {
+    // Add a small delay to make sure console output is flushed
+    setTimeout(() => {
+      process.exit(exitCode);
+    }, 300);
+  }
+}
+
+/**
+ * Custom prompt function using readline instead of inquirer
+ * This avoids issues with Ctrl+C interruption in inquirer
+ */
+function customPrompt(prompt: string): Promise<string> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: true
+  });
+
+  return new Promise((resolve, reject) => {
+    rl.question(chalk.bold(prompt) + ' ', (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+
+    // Handle Ctrl+C properly
+    rl.on('SIGINT', () => {
+      rl.close();
+      console.log(chalk.yellow('\nConversation interrupted.'));
+      console.log(chalk.green('Thanks for using LLaMB!'));
+      // Throw error instead of process.exit to allow proper cleanup in parent function
+      reject(new Error('User force closed the prompt'));
+    });
+  });
+}
+
 // Add debug command for terminal session info
 program
   .command('context:debug')
@@ -1319,6 +1611,616 @@ program
     }
   });
 
+// Add a special debug command for testing
+program
+  .command('force-reset')
+  .description('Force reset all data without confirmation (debug command)')
+  .action(async () => {
+    try {
+      console.log(chalk.yellow('Resetting all LLaMB data without confirmation (debug mode)...'));
+
+      // Clear provider configurations and settings
+      config.clear();
+
+      // Reinitialize with empty defaults to ensure proper schema
+      config.set('providers', []);
+      config.set('defaultProvider', '');
+      config.set('useProgressOnly', false);
+      config.set('useInkUI', true);
+
+      // Clear all conversation sessions
+      const sessionManager = SessionManager.getInstance();
+      sessionManager.clearAllSessions();
+
+      // Clear API keys for all providers
+      const providers = getProviders();
+      for (const provider of providers) {
+        await KeyManager.deleteApiKey(provider.name);
+      }
+
+      console.log(chalk.green('✓ All LLaMB data has been deleted successfully.'));
+    } catch (error: any) {
+      console.error(chalk.red('Error during reset:'), error.message);
+    }
+  });
+
+// Add a special debug command to set API key directly
+program
+  .command('apikey-direct <provider> <key>')
+  .description('Set API key directly (debug command)')
+  .action(async (provider, key) => {
+    try {
+      console.log(`Setting API key for ${provider} to: ${key}`);
+      const providers = getProviders();
+      const providerExists = providers.find(p => p.name === provider);
+
+      if (!providerExists) {
+        console.error(chalk.red(`Provider '${provider}' not found.`));
+        return;
+      }
+
+      await KeyManager.storeApiKey(provider, key);
+      console.log(chalk.green(`API key for '${provider}' set successfully!`));
+    } catch (error: any) {
+      console.error(chalk.red('Error:'), error.message);
+    }
+  });
+
+// Continuous conversation mode function
+async function startContinuousConversation(
+  initialQuestion: string,
+  options: any,
+  fileContent?: string
+) {
+  let conversationActive = true;
+  let currentQuestion = initialQuestion;
+  let currentFileContent = fileContent;
+
+  // Force disable Ink UI in continuous conversation mode to avoid issues
+  if (options.ink !== false) {
+    console.log(chalk.dim('Note: Ink UI is disabled in continuous conversation mode for better terminal compatibility.'));
+    options.ink = false;
+  }
+
+  // Start the conversation with the initial question
+  try {
+    await handleQuestion(currentQuestion, options, currentFileContent);
+
+    // Continue the conversation until the user exits
+    while (conversationActive) {
+      // Prompt for the next question
+      try {
+        console.log(chalk.dim('Ready for follow-up questions. Type /exit to end the conversation.'));
+        const followUp = await customPrompt('🦙 Follow-up question (type /exit to end conversation):');
+
+        // Check if the user wants to exit
+        if (followUp.toLowerCase() === '/exit' ||
+            followUp.toLowerCase() === '/quit' ||
+            followUp.trim() === '') {
+          console.log(chalk.green('Conversation ended. Thanks for using LLaMB!'));
+          conversationActive = false;
+          continue;
+        }
+
+        // Check for special slash commands
+        if (followUp.startsWith('/')) {
+          const slashCommand = followUp.substring(1);
+
+        switch (slashCommand) {
+          case 'clear':
+            try {
+              const sessionManager = SessionManager.getInstance();
+              sessionManager.clearSession();
+              console.log(chalk.green('Conversation context has been cleared.'));
+              continue;
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
+            }
+            continue;
+
+          case 'new':
+            try {
+              const sessionManager = SessionManager.getInstance();
+              sessionManager.createNewSession();
+              console.log(chalk.green('Started a new conversation context.'));
+              continue;
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
+            }
+            continue;
+
+          case 'history':
+            try {
+              const sessionManager = SessionManager.getInstance();
+              const messages = sessionManager.getMessages();
+
+              if (messages.length === 0) {
+                console.log(chalk.yellow('No conversation history yet.'));
+                continue;
+              }
+
+              console.log(chalk.bold('Conversation History:'));
+
+              // Get terminal width for the output box
+              const terminalWidth = process.stdout.columns || 80;
+              const maxWidth = Math.min(terminalWidth - 10, 100);
+
+              // Display each message with appropriate styling
+              messages.forEach((message, index) => {
+                const roleColor = message.role === 'user' ? chalk.blue : chalk.green;
+                const roleName = message.role === 'user' ? 'You' : 'Assistant';
+
+                console.log(roleColor(chalk.bold(`${roleName}:`)));
+
+                // Create a boxed message
+                const boxedMessage = boxen(wrap(message.content, { width: maxWidth - 4, indent: '' }), {
+                  padding: 1,
+                  borderColor: message.role === 'user' ? 'blue' : 'green',
+                  borderStyle: 'round',
+                  width: maxWidth,
+                });
+
+                console.log(boxedMessage);
+
+                // Add spacing between messages
+                if (index < messages.length - 1) {
+                  console.log('');
+                }
+              });
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
+            }
+            continue;
+
+          case 'file':
+            try {
+              // Ask for a file path
+              const filePath = await customPrompt('Enter file path:');
+              if (filePath.trim() === '') {
+                console.log(chalk.yellow('File path cannot be empty.'));
+                continue;
+              }
+
+              console.log(chalk.dim(`Reading file: ${filePath}`));
+              currentFileContent = readFile(filePath);
+              console.log(chalk.green(`✓ File loaded (${(currentFileContent.length / 1024).toFixed(1)} KB)`));
+              console.log(chalk.dim('Use /unfile to remove the attached file.'));
+            } catch (error: any) {
+              console.error(chalk.red(`Error reading file: ${error.message}`));
+            }
+            continue;
+
+          case 'unfile':
+            currentFileContent = undefined;
+            console.log(chalk.green('✓ File attachment removed.'));
+            continue;
+
+          case 'help':
+            console.log(chalk.bold('Conversation Commands:'));
+            console.log('  /exit, /quit           Exit the conversation');
+            console.log('  /clear                 Clear conversation history');
+            console.log('  /new                   Start a new conversation');
+            console.log('  /history               View conversation history');
+            console.log('  /file                  Attach a file to your next question');
+            console.log('  /unfile                Remove attached file');
+            console.log('  /help                  Show this help message');
+            continue;
+        }
+      }
+
+      // Set the current question and handle it
+      currentQuestion = followUp;
+      await handleQuestion(currentQuestion, options, currentFileContent);
+      } catch (error: any) {
+        console.error(chalk.red('Error in conversation:'), error);
+        // Check if it's an inquirer termination error (usually Ctrl+C)
+        if (error.isTtyError ||
+            error.message?.includes('canceled') ||
+            error.code === 'SIGINT' ||
+            error.message?.includes('User force closed')) {
+          console.log(chalk.yellow('\nConversation interrupted by user.'));
+          console.log(chalk.green('Thanks for using LLaMB!'));
+          process.exit(0); // Explicitly exit the process
+        } else {
+          // Log other errors but continue the conversation
+          console.error(chalk.red('Error:'), error.message);
+          continue;
+        }
+      }
+    }
+
+  } catch (error: any) {
+    console.error(chalk.red('Error:'), error.message);
+  }
+}
+
+// Handle an individual question (extracted to reduce code duplication)
+async function handleQuestion(question: string, options: any, fileContent?: string) {
+  try {
+    // Check if the provider has a valid API key if needed
+    const provider = await getProviderWithApiKey(options.provider);
+
+    if (!provider.noAuth && !provider.apiKey) {
+      console.log(chalk.yellow(`⚠️  Provider '${provider.name}' requires an API key but none is set.`));
+      console.log(chalk.cyan('To add an API key interactively, run:'));
+      console.log(chalk.bold('  llamb provider:apikey'));
+      console.log(chalk.cyan('To add an API key non-interactively, run:'));
+      console.log(chalk.bold(`  llamb provider:apikey --provider ${provider.name} --key YOUR_API_KEY`));
+      console.log(chalk.cyan('To add a new provider, run:'));
+      console.log(chalk.bold('  llamb provider:add'));
+      console.log(chalk.cyan('To list available providers, run:'));
+      console.log(chalk.bold('  llamb providers'));
+      console.log('');
+
+      // Check if any local provider is available as a fallback
+      const localProviders = getProviders().filter(p => p.noAuth === true);
+      if (localProviders.length > 0) {
+        console.log(chalk.green(`You can use a local provider without an API key, for example:`));
+        console.log(chalk.bold(`llamb -p ${localProviders[0].name} "${question}"`));
+      }
+      throw new Error("No API key found");
+    }
+
+    // Get terminal width for the output box
+    const terminalWidth = process.stdout.columns || 80;
+    const maxWidth = Math.min(terminalWidth - 10, 100); // Account for padding and max reasonable width
+
+    // Determine if we should stream (default to true unless explicitly set to false)
+    const shouldStream = options.stream !== false;
+
+    // Determine if we should use progress-only mode (prevents scrollback artifacts)
+    // Check command-line options first, then fall back to config setting
+    // --live-stream flag overrides both --progress-only and the config setting
+    const useProgressOnly = options.liveStream === true ? false :
+                          (options.progressOnly === true ||
+                          (options.progressOnly !== false && config.get('useProgressOnly')));
+
+    // Check if we should use the ink-based UI (enabled by default, can be disabled with --no-ink)
+    const useInkUI = options.ink !== false && config.get('useInkUI') === true;
+
+    let answer = '';
+
+    if (shouldStream) {
+      // If using Ink UI, it handles the streaming display
+      if (useInkUI) {
+        // Create an AbortController for cancellation support
+        const abortController = new AbortController();
+
+        // Create a streaming function for Ink to consume
+        const streamingFunction = (onChunk: (chunk: string) => void) => {
+          return askQuestionWithStreaming(
+            question,
+            onChunk,
+            options.model,
+            options.provider,
+            options.baseUrl,
+            options.history,
+            fileContent,
+            abortController
+          );
+        };
+
+        // Use the ink-based UI for display with cancellation support
+        const unmount = renderStreamingResponse(
+          question,
+          streamingFunction,
+          (fullResponse: string) => {
+            answer = fullResponse;
+            // Handle file output when complete
+            if (options.output !== undefined) {
+              try {
+                handleFileOutput(answer, options.output, options.overwrite);
+              } catch (error: any) {
+                console.error(chalk.red(`Error saving response: ${error.message}`));
+              }
+            }
+          },
+          abortController,
+          options.chat // Pass the chat mode flag
+        );
+
+        // Handle Ctrl+C during streaming
+        const sigintHandler = () => {
+          // Abort the request
+          abortController.abort();
+          // Unmount the UI
+          unmount();
+          console.log(chalk.red('\nRequest cancelled by user'));
+          // In continuous conversation mode, we want to throw an error to be caught by the parent
+          if (options.chat) {
+            throw new Error('User force closed');
+          } else {
+            // In non-chat mode, exit when done
+            exitWhenDone()
+          }
+        };
+
+        process.on('SIGINT', sigintHandler);
+
+        // Wait for the streaming to complete before returning
+        await new Promise<void>((resolve) => {
+          const checkInterval = setInterval(() => {
+            if (typeof answer !== 'undefined') {
+              clearInterval(checkInterval);
+              // Remove the SIGINT handler to avoid memory leaks
+              process.removeListener('SIGINT', sigintHandler);
+              resolve();
+            }
+          }, 100);
+        });
+
+        unmount();
+        // Exit when done in non-chat mode
+        if (!options.chat) {
+          exitWhenDone();
+        }
+
+      } else if (useProgressOnly) {
+        // PROGRESS-ONLY MODE: collect response and only render at the end
+        // This eliminates all scrollback issues
+        let partialResponse = '';
+        let streamComplete = false;
+        let updateCounter = 0;
+        const streamInterval = 50; // ms between updates
+
+        // Custom spinner alternating between lamb and llama emojis
+        const animalEmojis = ['🐑', '🦙'];
+        const spinner = ora({
+          text: chalk.dim('Thinking...'),
+          spinner: {
+            frames: animalEmojis,
+            interval: 400
+          },
+          color: 'yellow'
+        }).start();
+
+        // Display the question once
+        console.log(chalk.dim('Asking: ') + question);
+
+        // Collect the response through streaming without displaying intermediate updates
+        const handleStreamingChunk = (chunk: string) => {
+          partialResponse += chunk;
+          updateCounter++;
+        };
+
+        // Start a timer that will update a progress indicator instead of the content
+        const progressTimer = setInterval(() => {
+          if (updateCounter > 0 && spinner.isSpinning) {
+            spinner.text = chalk.dim(`Receiving response${'.'.repeat(updateCounter % 4)}`);
+            updateCounter = 0;
+          }
+
+          if (streamComplete) {
+            clearInterval(progressTimer);
+          }
+        }, streamInterval);
+
+        // Set up the callback and ask the question
+        answer = await askQuestionWithStreaming(
+          question,
+          handleStreamingChunk,
+          options.model,
+          options.provider,
+          options.baseUrl,
+          options.history,
+          fileContent
+        );
+
+        // Mark streaming as complete and clear the interval
+        streamComplete = true;
+        clearInterval(progressTimer);
+
+        // Stop the spinner
+        spinner.stop();
+
+        // Parse and display the full response at once
+        //@ts-ignore
+        const parsedResponse = marked(String(answer)) as string;
+        const boxedResponse = boxen(parsedResponse, {
+          padding: 1,
+          borderColor: 'green',
+          borderStyle: 'round',
+          title: 'LLaMB',
+          titleAlignment: 'center',
+          width: maxWidth,
+        });
+
+        // Display the complete response once with no streaming artifacts
+        console.log(boxedResponse);
+
+        // Exit when done in non-chat mode
+        if (!options.chat) {
+          exitWhenDone();
+        }
+      } else {
+        // LIVE STREAMING MODE: show content as it arrives (may have scrollback artifacts)
+        let partialResponse = '';
+        let isFirstChunk = true;
+
+        // Custom spinner alternating between lamb and llama emojis
+        const animalEmojis = ['🐑', '🦙'];
+        const spinner = ora({
+          text: chalk.dim('Thinking...'),
+          spinner: {
+            frames: animalEmojis,
+            interval: 400
+          },
+          color: 'yellow'
+        }).start();
+
+        // Display the question once
+        console.log(chalk.dim('Asking: ') + question);
+
+        // Function to create a clean render of the response
+        const renderResponse = (content: string) => {
+          // Parse markdown
+          //@ts-ignore
+          const parsedContent = marked(content) as string;
+
+          // Create the boxed response
+          return boxen(parsedContent, {
+            padding: 1,
+            borderColor: 'green',
+            borderStyle: 'round',
+            title: 'LLaMB',
+            titleAlignment: 'center',
+            width: maxWidth,
+          });
+        };
+
+        // Track the state for terminal rendering
+        let lastOutputLines = 0;
+
+        // Process streaming content with live updates
+        const handleStreamingChunk = (chunk: string) => {
+          // Stop the spinner on first chunk
+          if (isFirstChunk) {
+            spinner.stop();
+            isFirstChunk = false;
+          }
+
+          // Accumulate the response
+          partialResponse += chunk;
+
+          // Render the response and store its line count
+          const rendered = renderResponse(partialResponse);
+          const renderedLines = rendered.split('\n').length;
+
+          // Logic for first render vs subsequent renders
+          if (lastOutputLines === 0) {
+            // First render after spinner stops
+            process.stdout.write(rendered + '\n');
+          } else {
+            // For subsequent renders:
+            // 1. Move cursor up to beginning of last output
+            process.stdout.write(`\x1B[${lastOutputLines}A`);
+            // 2. Clear screen from cursor down (removes old content)
+            process.stdout.write('\x1B[J');
+            // 3. Write new content
+            process.stdout.write(rendered + '\n');
+          }
+
+          // Store line count for next update
+          lastOutputLines = renderedLines;
+        };
+
+        // Set up the callback and ask the question
+        answer = await askQuestionWithStreaming(
+          question,
+          handleStreamingChunk,
+          options.model,
+          options.provider,
+          options.baseUrl,
+          options.history,
+          fileContent
+        );
+
+        // Exit when done in non-chat mode
+        if (!options.chat) {
+          exitWhenDone();
+        }
+      }
+
+      // Handle file output
+      if (options.output !== undefined) {
+        try {
+          await handleFileOutput(answer, options.output, options.overwrite);
+        } catch (error: any) {
+          console.error(chalk.red(`Error saving response: ${error.message}`));
+        }
+      }
+
+      // Exit when done in non-chat mode
+      if (!options.chat) {
+        exitWhenDone();
+      }
+    } else {
+      // Non-streaming version - show spinner alternating between lamb and llama
+      const animalEmojis = ['🐑', '🦙'];
+      const spinner = ora({
+        text: chalk.dim('Thinking...'),
+        spinner: {
+          frames: animalEmojis,
+          interval: 400
+        },
+        color: 'yellow'
+      }).start();
+
+      // Call without streaming
+      answer = await askQuestion(question, options.model, options.provider, options.baseUrl, options.history, fileContent);
+
+      // Stop the spinner
+      spinner.stop();
+
+      // Make sure answer is a string before parsing markdown
+      const answerText = typeof answer === 'string' ? answer : String(answer);
+
+      // Parse markdown and apply syntax highlighting
+      // Need to cast result to string since marked types are problematic
+      //@ts-ignore
+      const parsedMarkdown = marked(answerText) as string;
+
+      // Create a styled box for the answer
+      const boxedAnswer = boxen(parsedMarkdown, {
+        padding: 1,
+        borderColor: 'green',
+        borderStyle: 'round',
+        title: 'LLaMB',
+        titleAlignment: 'center',
+        width: maxWidth,
+      });
+
+      console.log(boxedAnswer);
+
+      // Handle file output
+      if (options.output !== undefined) {
+        try {
+          await handleFileOutput(answerText, options.output, options.overwrite);
+        } catch (error: any) {
+          console.error(chalk.red(`Error saving response: ${error.message}`));
+        }
+      }
+
+      // Exit when done in non-chat mode
+      if (!options.chat) {
+        exitWhenDone();
+      }
+    }
+  } catch (error: any) {
+    if (error.message.includes('No API key found') ||
+        error.message.includes('Failed to get response from')) {
+      // Provide helpful setup instructions
+      console.log(chalk.yellow('⚠️  You need to configure an LLM provider before using llamb.'));
+      console.log(chalk.cyan('To add a provider non-interactively, run:'));
+      console.log(chalk.bold('  llamb provider:add --name openai --url https://api.openai.com/v1 --model gpt-3.5-turbo'));
+      console.log(chalk.cyan('OR'));
+      console.log(chalk.bold('  llamb provider:add --name ollama --url http://localhost:11434/v1 --model llama2'));
+      console.log(chalk.cyan('To add a provider interactively, run:'));
+      console.log(chalk.bold('  llamb provider:add'));
+      console.log(chalk.cyan('To set up an API key, run:'));
+      console.log(chalk.bold('  llamb provider:apikey --provider openai --key YOUR_API_KEY'));
+
+      // Check if Ollama is configured
+      const providers = getProviders();
+      const ollama = providers.find(p => p.name === 'ollama');
+      if (ollama) {
+        console.log('');
+        console.log(chalk.green('You can use Ollama locally without an API key if you have it installed:'));
+        console.log(chalk.bold(`llamb -p ollama "${question}"`));
+        console.log(chalk.dim('Learn more about Ollama: https://ollama.com'));
+      }
+    } else {
+      console.error(chalk.red('Error:'), error.message);
+    }
+
+    // Exit when done in non-chat mode with error code
+    if (!options.chat) {
+      exitWhenDone(1); // Exit with error code 1
+    }
+  }
+}
+
+// Process the command line arguments
 program.parse(process.argv);
 
 // If no arguments, show help

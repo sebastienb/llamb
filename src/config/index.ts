@@ -25,24 +25,11 @@ const config = new Conf<ConfigSchema>({
   schema: {
     providers: {
       type: 'array',
-      default: [
-        {
-          name: 'openai',
-          baseUrl: 'https://api.openai.com/v1',
-          defaultModel: 'gpt-3.5-turbo',
-          noAuth: false, // Explicitly mark as requiring auth
-        },
-        {
-          name: 'ollama',
-          baseUrl: 'http://localhost:11434/v1',
-          defaultModel: 'llama2',
-          noAuth: true, // Local provider that doesn't need auth
-        }
-      ],
+      default: [], // Start with no providers - let users add them
     },
     defaultProvider: {
       type: 'string',
-      default: 'ollama', // Set default to local provider that doesn't need auth
+      default: '', // No default provider - will prompt user to add one
     },
     useProgressOnly: {
       type: 'boolean',
