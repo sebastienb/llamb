@@ -10,3 +10,7 @@ Fixes history and context when used locally
 ## v1.1.0
 Upodated how streaming responses are rendered so users can scroll up wihtout any artifacts.
 
+
+## v1.1.1
+Minor bug fix on version number listed in the app
+
