@@ -17,7 +17,7 @@ import hljs from 'highlight.js';
 import path from 'path';
 // Import inquirer directly now that we have polyfills
 import inquirer from 'inquirer';
-import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider, getProviderWithApiKey } from '../services/llm.js';
+import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider, getProviderWithApiKey, deleteProvider } from '../services/llm.js';
 import { KeyManager } from '../utils/keyManager.js';
 import { SessionManager } from '../services/sessionManager.js';
 import { readFile, writeFile, fileExists, generateUniqueFilename } from '../utils/fileUtils.js';
@@ -75,6 +75,18 @@ Examples:
   $ llamb /model                               Change the default model for current provider
   $ llamb model:default                        Select default model for the current provider
   $ llamb model:default -p openai              Select default model for a specific provider
+
+Provider Management:
+  $ llamb provider:add                         Add a new provider interactively
+  $ llamb provider:edit                        Edit an existing provider interactively
+  $ llamb provider:delete                      Delete a provider interactively
+  $ llamb provider:apikey                      Update a provider's API key
+  $ llamb provider:default                     Set the default provider
+  $ llamb providers                            List all configured providers
+  $ llamb provider:edit --name openai --url https://api.openai.com/v1 --model gpt-4o
+                                               Edit a provider non-interactively
+  $ llamb provider:delete --name openai        Delete a provider non-interactively
+  $ llamb provider:delete --name openai --force Delete a provider without confirmation
 `);
 
 program
@@ -711,30 +723,53 @@ program
           }
         }
       } catch (error: any) {
-        if (error.message.includes('No API key found') || 
-            error.message.includes('Failed to get response from')) {
+        if (error.message.includes('No API key found')) {
           // Provide helpful setup instructions
-          console.log(chalk.yellow('⚠️  You need to configure an LLM provider before using llamb.'));
-          console.log(chalk.cyan('To add a provider non-interactively, run:'));
-          console.log(chalk.bold('  llamb provider:add --name openai --url https://api.openai.com/v1 --model gpt-3.5-turbo'));
-          console.log(chalk.cyan('OR'));
-          console.log(chalk.bold('  llamb provider:add --name ollama --url http://localhost:11434/v1 --model llama2'));
-          console.log(chalk.cyan('To add a provider interactively, run:'));
-          console.log(chalk.bold('  llamb provider:add'));
-          console.log(chalk.cyan('To set up an API key, run:'));
-          console.log(chalk.bold('  llamb provider:apikey --provider openai --key YOUR_API_KEY'));
+          console.log(chalk.yellow('⚠️  You need to configure an LLM provider.'));
+          console.log(chalk.cyan('Add a provider: ') + chalk.bold('llamb provider:add'));
           
           // Check if Ollama is configured
           const providers = getProviders();
           const ollama = providers.find(p => p.name === 'ollama');
           if (ollama) {
-            console.log('');
-            console.log(chalk.green('You can use Ollama locally without an API key if you have it installed:'));
-            console.log(chalk.bold(`llamb -p ollama "${question}"`));
-            console.log(chalk.dim('Learn more about Ollama: https://ollama.com'));
+            console.log(chalk.green(`Try Ollama: `) + chalk.bold(`llamb -p ollama "${question}"`));
           }
+          exitWhenDone(1);
+        } else if (error.message.includes('appears to be offline') || error.message.includes('unreachable')) {
+          // Provider offline error
+          console.log(chalk.yellow('⚠️  ' + error.message));
+          
+          // Get all available providers to suggest alternatives
+          const providers = getProviders();
+          const currentProvider = providers.find(p => p.name === options.provider || getDefaultProvider());
+          const otherProviders = providers.filter(p => p.name !== currentProvider?.name);
+          
+          if (otherProviders.length > 0) {
+            let readyProviders = 0;
+            for (const provider of otherProviders) {
+              const hasApiKey = provider.noAuth ? true : await KeyManager.getApiKey(provider.name);
+              if (hasApiKey || provider.noAuth) {
+                console.log(chalk.cyan(`Try: `) + chalk.bold(`llamb -p ${provider.name} "${question}"`));
+                readyProviders++;
+                if (readyProviders >= 2) break; // Limit to just 2 suggestions
+              }
+            }
+            
+            if (readyProviders === 0) {
+              console.log(chalk.cyan('Change provider: ') + chalk.bold('llamb provider:default'));
+            }
+          } else {
+            console.log(chalk.cyan('Add new provider: ') + chalk.bold('llamb provider:add'));
+          }
+          exitWhenDone(1);
+        } else if (error.message.includes('Failed to get response from')) {
+          // General provider error
+          console.log(chalk.yellow('⚠️  ' + error.message));
+          console.log(chalk.cyan('Try: ') + chalk.bold('llamb provider:default'));
+          exitWhenDone(1);
         } else {
           console.error(chalk.red('Error:'), error.message);
+          exitWhenDone(1);
         }
       }
     } catch (error: any) {
@@ -1172,6 +1207,208 @@ program
   });
 
 program
+  .command('provider:edit')
+  .description('Edit an existing provider configuration')
+  .option('--name <name>', 'Name of the provider to edit')
+  .option('--url <url>', 'New base URL for the provider')
+  .option('--key <apiKey>', 'New API key for the provider')
+  .option('--model <model>', 'New default model for the provider')
+  .action(async (options) => {
+    try {
+      // Check dependencies at the beginning
+      checkDependencies();
+      
+      const providers = getProviders();
+      if (providers.length === 0) {
+        console.log(chalk.yellow('No providers configured. Add a provider first with:'));
+        console.log(chalk.bold('  llamb provider:add'));
+        return;
+      }
+
+      // Non-interactive mode
+      if (options.name) {
+        const provider = providers.find(p => p.name === options.name);
+        if (!provider) {
+          console.error(chalk.red(`Provider '${options.name}' not found.`));
+          return;
+        }
+
+        // Update provider properties
+        let updated = false;
+        
+        // Update URL if provided
+        if (options.url) {
+          try {
+            new URL(options.url); // Validate URL
+            provider.baseUrl = options.url;
+            updated = true;
+            console.log(chalk.green(`Provider URL updated to: ${options.url}`));
+          } catch (e) {
+            console.error(chalk.red('Invalid URL format'));
+            return;
+          }
+        }
+        
+        // Update model if provided
+        if (options.model) {
+          provider.defaultModel = options.model;
+          updated = true;
+          console.log(chalk.green(`Default model updated to: ${options.model}`));
+        }
+        
+        // If API key is provided, store it securely
+        if (options.key) {
+          try {
+            await KeyManager.storeApiKey(provider.name, options.key);
+            console.log(chalk.green('API key has been updated securely'));
+            updated = true;
+          } catch (keyError: any) {
+            console.error(chalk.red('Error storing API key:'), keyError.message);
+            return;
+          }
+        }
+        
+        if (updated) {
+          // Save the updated provider
+          await addProvider(provider);
+          console.log(chalk.green(`Provider '${provider.name}' updated successfully`));
+        } else {
+          console.log(chalk.yellow('No changes were specified. Use --url, --model, or --key to specify changes.'));
+        }
+        
+        return;
+      }
+
+      // Interactive mode - first select which provider to edit
+      // Prepare choices with typed options
+      const providerChoices = [
+        ...providers.map(p => ({ name: p.name, value: p.name })),
+        new inquirer.Separator(),
+        { name: 'Cancel', value: 'cancel' }
+      ];
+      
+      const providerSelection = await inquirer.prompt({
+        type: 'list',
+        name: 'name',
+        message: 'Select provider to edit:',
+        choices: providerChoices,
+      });
+      
+      // Handle cancel option
+      if (providerSelection.name === 'cancel') {
+        console.log(chalk.yellow('Operation cancelled.'));
+        return;
+      }
+      
+      const selectedProvider = providers.find(p => p.name === providerSelection.name);
+      if (!selectedProvider) {
+        throw new Error('Selected provider not found');
+      }
+      
+      // Ask for updated values
+      const providerUpdates = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'baseUrl',
+          message: 'Base URL:',
+          default: selectedProvider.baseUrl,
+          validate: (input) => {
+            if (input.length === 0) return 'Base URL cannot be empty';
+            try {
+              new URL(input);
+              return true;
+            } catch (e) {
+              return 'Invalid URL format';
+            }
+          },
+        },
+        {
+          type: 'confirm',
+          name: 'updateApiKey',
+          message: 'Do you want to update the API key?',
+          default: false,
+        },
+        {
+          type: 'password',
+          name: 'apiKey',
+          message: 'New API Key:',
+          when: (answers) => answers.updateApiKey,
+          validate: (input) => {
+            if (selectedProvider.noAuth) return true;
+            return input.length > 0 ? true : 'API Key cannot be empty';
+          },
+        }
+      ]);
+      
+      // Try to fetch available models for the updated URL
+      console.log(chalk.dim('Fetching available models...'));
+      let availableModels: string[] = [];
+      let modelAnswer: { defaultModel: string };
+      
+      try {
+        // Create temporary OpenAI client to fetch models using the updated URL
+        const openai = new OpenAI({
+          apiKey: providerUpdates.apiKey || await KeyManager.getApiKey(selectedProvider.name) || 'dummy-key',
+          baseURL: providerUpdates.baseUrl,
+        });
+        
+        const models = await openai.models.list();
+        availableModels = models.data.map(model => model.id);
+        
+        if (availableModels.length > 0) {
+          console.log(chalk.green(`Found ${availableModels.length} available models!`));
+          
+          // Let user select from available models
+          modelAnswer = await inquirer.prompt({
+            type: 'list',
+            name: 'defaultModel',
+            message: 'Select default model:',
+            choices: availableModels,
+            default: availableModels.findIndex(m => m === selectedProvider.defaultModel),
+          });
+        } else {
+          modelAnswer = await inquirer.prompt({
+            type: 'input',
+            name: 'defaultModel',
+            message: 'Default model:',
+            default: selectedProvider.defaultModel,
+            validate: (input: string) => input.length > 0 ? true : 'Default model cannot be empty',
+          });
+        }
+      } catch (error) {
+        console.log(chalk.yellow('Could not fetch models. Using manual model configuration.'));
+        
+        modelAnswer = await inquirer.prompt({
+          type: 'input',
+          name: 'defaultModel',
+          message: 'Default model:',
+          default: selectedProvider.defaultModel,
+          validate: (input: string) => input.length > 0 ? true : 'Default model cannot be empty',
+        });
+      }
+      
+      // Update the provider
+      const updatedProvider = {
+        ...selectedProvider,
+        baseUrl: providerUpdates.baseUrl,
+        defaultModel: modelAnswer.defaultModel
+      };
+      
+      // Save the updated provider
+      await addProvider(updatedProvider);
+      console.log(chalk.green(`Provider '${selectedProvider.name}' updated successfully`));
+      
+      // If API key was provided, store it securely
+      if (providerUpdates.updateApiKey && providerUpdates.apiKey) {
+        await KeyManager.storeApiKey(selectedProvider.name, providerUpdates.apiKey);
+        console.log(chalk.green('API key has been updated securely'));
+      }
+    } catch (error: any) {
+      console.error(chalk.red('Error:'), error.message);
+    }
+  });
+
+program
   .command('models')
   .description('List available models for a provider')
   .option('-p, --provider <provider>', 'Specify the provider to use')
@@ -1184,6 +1421,108 @@ program
       models.forEach(model => {
         console.log(`  ${model}`);
       });
+    } catch (error: any) {
+      console.error(chalk.red('Error:'), error.message);
+    }
+  });
+
+program
+  .command('provider:delete')
+  .description('Delete a provider configuration')
+  .option('--name <name>', 'Name of the provider to delete')
+  .option('--force', 'Skip confirmation prompt')
+  .action(async (options) => {
+    try {
+      const providers = getProviders();
+      if (providers.length === 0) {
+        console.log(chalk.yellow('No providers configured.'));
+        return;
+      }
+      
+      // Non-interactive mode
+      if (options.name) {
+        const provider = providers.find(p => p.name === options.name);
+        if (!provider) {
+          console.error(chalk.red(`Provider '${options.name}' not found.`));
+          return;
+        }
+        
+        // Get confirmation unless --force is specified
+        if (!options.force) {
+          const confirm = await inquirer.prompt([
+            {
+              type: 'confirm',
+              name: 'proceed',
+              message: `Are you sure you want to delete provider '${options.name}'?`,
+              default: false,
+            }
+          ]);
+          
+          if (!confirm.proceed) {
+            console.log(chalk.yellow('Deletion cancelled.'));
+            return;
+          }
+        }
+        
+        await deleteProvider(options.name);
+        console.log(chalk.green(`Provider '${options.name}' has been deleted.`));
+        
+        // If there are providers left, show the new default
+        const remainingProviders = getProviders();
+        const newDefault = getDefaultProvider();
+        if (remainingProviders.length > 0 && newDefault) {
+          console.log(chalk.dim(`New default provider: ${newDefault}`));
+        }
+        
+        return;
+      }
+      
+      // Interactive mode - select provider to delete
+      // Prepare choices with typed options
+      const deleteChoices = [
+        ...providers.map(p => ({ name: p.name, value: p.name })),
+        new inquirer.Separator(),
+        { name: 'Cancel', value: 'cancel' }
+      ];
+      
+      const providerChoice = await inquirer.prompt({
+        type: 'list',
+        name: 'name',
+        message: 'Select a provider to delete:',
+        choices: deleteChoices,
+      });
+      
+      // Handle cancel option
+      if (providerChoice.name === 'cancel') {
+        console.log(chalk.yellow('Operation cancelled.'));
+        return;
+      }
+      
+      // Get confirmation
+      const confirmation = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'proceed',
+          message: `Are you sure you want to delete provider '${providerChoice.name}'?`,
+          default: false,
+        }
+      ]);
+      
+      if (!confirmation.proceed) {
+        console.log(chalk.yellow('Deletion cancelled.'));
+        return;
+      }
+      
+      // Delete the provider
+      await deleteProvider(providerChoice.name);
+      console.log(chalk.green(`Provider '${providerChoice.name}' has been deleted.`));
+      
+      // If there are providers left, show the new default
+      const remainingProviders = getProviders();
+      const newDefault = getDefaultProvider();
+      if (remainingProviders.length > 0 && newDefault) {
+        console.log(chalk.dim(`New default provider: ${newDefault}`));
+      }
     } catch (error: any) {
       console.error(chalk.red('Error:'), error.message);
     }
@@ -2187,28 +2526,47 @@ async function handleQuestion(question: string, options: any, fileContent?: stri
       }
     }
   } catch (error: any) {
-    if (error.message.includes('No API key found') ||
-        error.message.includes('Failed to get response from')) {
+    if (error.message.includes('No API key found')) {
       // Provide helpful setup instructions
-      console.log(chalk.yellow('⚠️  You need to configure an LLM provider before using llamb.'));
-      console.log(chalk.cyan('To add a provider non-interactively, run:'));
-      console.log(chalk.bold('  llamb provider:add --name openai --url https://api.openai.com/v1 --model gpt-3.5-turbo'));
-      console.log(chalk.cyan('OR'));
-      console.log(chalk.bold('  llamb provider:add --name ollama --url http://localhost:11434/v1 --model llama2'));
-      console.log(chalk.cyan('To add a provider interactively, run:'));
-      console.log(chalk.bold('  llamb provider:add'));
-      console.log(chalk.cyan('To set up an API key, run:'));
-      console.log(chalk.bold('  llamb provider:apikey --provider openai --key YOUR_API_KEY'));
-
+      console.log(chalk.yellow('⚠️  You need to configure an LLM provider.'));
+      console.log(chalk.cyan('Add a provider: ') + chalk.bold('llamb provider:add'));
+      
       // Check if Ollama is configured
       const providers = getProviders();
       const ollama = providers.find(p => p.name === 'ollama');
       if (ollama) {
-        console.log('');
-        console.log(chalk.green('You can use Ollama locally without an API key if you have it installed:'));
-        console.log(chalk.bold(`llamb -p ollama "${question}"`));
-        console.log(chalk.dim('Learn more about Ollama: https://ollama.com'));
+        console.log(chalk.green(`Try Ollama: `) + chalk.bold(`llamb -p ollama "${question}"`));
       }
+    } else if (error.message.includes('appears to be offline') || error.message.includes('unreachable')) {
+      // Provider offline error
+      console.log(chalk.yellow('⚠️  ' + error.message));
+      
+      // Get all available providers to suggest alternatives
+      const providers = getProviders();
+      const currentProvider = providers.find(p => p.name === options.provider || getDefaultProvider());
+      const otherProviders = providers.filter(p => p.name !== currentProvider?.name);
+      
+      if (otherProviders.length > 0) {
+        let readyProviders = 0;
+        for (const provider of otherProviders) {
+          const hasApiKey = provider.noAuth ? true : await KeyManager.getApiKey(provider.name);
+          if (hasApiKey || provider.noAuth) {
+            console.log(chalk.cyan(`Try: `) + chalk.bold(`llamb -p ${provider.name} "${question}"`));
+            readyProviders++;
+            if (readyProviders >= 2) break; // Limit to just 2 suggestions
+          }
+        }
+        
+        if (readyProviders === 0) {
+          console.log(chalk.cyan('Change provider: ') + chalk.bold('llamb provider:default'));
+        }
+      } else {
+        console.log(chalk.cyan('Add new provider: ') + chalk.bold('llamb provider:add'));
+      }
+    } else if (error.message.includes('Failed to get response from')) {
+      // General provider error
+      console.log(chalk.yellow('⚠️  ' + error.message));
+      console.log(chalk.cyan('Try: ') + chalk.bold('llamb provider:default'));
     } else {
       console.error(chalk.red('Error:'), error.message);
     }

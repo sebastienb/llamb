@@ -9,7 +9,8 @@ llamb \- CLI LLM client that answers questions directly from your terminal
 .B llamb
 is a command-line interface for working with Large Language Models (LLMs) directly from your terminal.
 It supports multiple providers (OpenAI, Anthropic, Mistral, etc.), conversation history management,
-file input/output, and terminal-specific sessions.
+file input/output, terminal-specific sessions, smart error handling for offline providers,
+and comprehensive provider management.
 .SH OPTIONS
 .TP
 .B \-m, \-\-model <model>
@@ -65,7 +66,13 @@ Ask a question to the LLM
 List configured LLM providers
 .TP
 .B llamb provider:add
-Add or update a provider configuration
+Add a new provider configuration
+.TP
+.B llamb provider:edit
+Edit an existing provider configuration
+.TP
+.B llamb provider:delete
+Delete a provider configuration
 .TP
 .B llamb provider:apikey
 Update API key for a provider
@@ -168,6 +175,21 @@ Change the default model for current provider:
 .TP
 Change the default model for a specific provider:
 .B llamb model:default -p openai
+.TP
+Edit an existing provider:
+.B llamb provider:edit
+.TP
+Edit a provider non-interactively:
+.B llamb provider:edit --name openai --url https://api.openai.com/v1 --model gpt-4o
+.TP
+Delete a provider interactively:
+.B llamb provider:delete
+.TP
+Delete a provider non-interactively:
+.B llamb provider:delete --name openai
+.TP
+Delete a provider without confirmation:
+.B llamb provider:delete --name openai --force
 .TP
 Use ink-based UI (default):
 .B llamb "What is the capital of France?"

@@ -12,6 +12,8 @@ LLaMB is a command-line tool that allows you to interact with Large Language Mod
 - 🔐 **Secure** - API keys stored securely in your system's credential manager
 - 🖥️ **Local models** - Works with local models like Ollama and LM Studio
 - 🎨 **React-based UI** - Clean, artifact-free terminal interface using ink
+- 🧠 **Smart error handling** - Detects offline providers and offers alternatives
+- 🛠️ **Provider management** - Edit, switch, and configure providers easily
 
 ## Installation
 
@@ -206,10 +208,35 @@ llamb providers
 llamb /providers
 ```
 
-#### Add or update a provider
+#### Add a provider
 
 ```bash
 llamb provider:add
+```
+
+#### Edit an existing provider
+
+```bash
+# Interactive mode
+llamb provider:edit
+
+# Non-interactive mode
+llamb provider:edit --name openai --url https://api.openai.com/v1
+llamb provider:edit --name openai --model gpt-4o
+llamb provider:edit --name openai --key YOUR_API_KEY
+```
+
+#### Delete a provider
+
+```bash
+# Interactive mode - select provider and confirm
+llamb provider:delete
+
+# Non-interactive mode
+llamb provider:delete --name openai
+
+# Skip confirmation prompt
+llamb provider:delete --name openai --force
 ```
 
 #### Set the default provider

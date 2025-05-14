@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import config, { LLMProvider } from '../config/index.js';
 import { KeyManager } from '../utils/keyManager.js';
 import { SessionManager, Message } from './sessionManager.js';
+import chalk from 'chalk';
 
 // We no longer automatically set API keys from environment variables.
 // Users should explicitly set them using the provider:add or provider:apikey commands.
@@ -110,8 +111,67 @@ export async function askQuestionWithStreaming(
 
       // Create a local AbortController if none was provided
       const localAbortController = abortController || new AbortController();
+      
+      // Create a flag to track if we've gotten any response
+      let hasReceivedResponse = false;
+      let providerCheckStarted = false;
+      let providerCheckComplete = false;
+      let providerIsOnline = false;
+      
+      // Set up a timeout to check if the provider is online after 3 seconds of no response
+      const providerCheckTimeout = setTimeout(async () => {
+        if (!hasReceivedResponse && !providerCheckStarted) {
+          providerCheckStarted = true;
+          
+          // Instead of adding to streamCallback, we'll print directly to console
+          // This keeps the response area clean and shows status below it
+          console.log(chalk.dim('\nChecking if provider is online...'));
+          
+          try {
+            // Create a new client just for the check
+            const checkClient = new OpenAI({
+              apiKey: provider.apiKey || 'dummy-key',
+              baseURL: actualBaseUrl,
+            });
+            
+            // Try to list models as a quick health check
+            await checkClient.models.list();
+            
+            // If we get here, the provider is online but might be processing the request
+            providerIsOnline = true;
+            console.log(chalk.yellow('Provider is online but taking longer than expected to respond.'));
+            console.log(chalk.dim('You can press ESC to cancel or wait for the response.'));
+          } catch (checkError) {
+            // Provider appears to be offline
+            console.log(chalk.yellow('⚠️ Provider appears to be offline or unreachable.'));
+            console.log(chalk.dim('You can press ESC to cancel or try another provider with:'));
+            console.log(chalk.cyan('llamb provider:default'));
+          } finally {
+            providerCheckComplete = true;
+          }
+        }
+      }, 3000);
 
+      // Store the original console.error outside the try block
+      const originalConsoleError = console.error;
+      
       try {
+        // Prevent default error logging in OpenAI library
+        // This is necessary to avoid showing the verbose stack trace
+        console.error = function(err: any, ...args: any[]) {
+          // Only suppress errors from OpenAI library
+          if (typeof err === 'string' && (
+              err.includes('node-fetch') || 
+              err.includes('openai') || 
+              err.includes('APIConnectionError') ||
+              err.includes('Connection error')
+            )) {
+            // Suppress verbose errors
+            return;
+          }
+          originalConsoleError.call(console, err, ...args);
+        };
+        
         // Create options object with the abort signal
         const requestOptions = {
           signal: localAbortController.signal
@@ -124,6 +184,17 @@ export async function askQuestionWithStreaming(
         }, requestOptions);
 
         for await (const chunk of stream) {
+          // When we get the first chunk, clear the timeout and set the flag
+          if (!hasReceivedResponse) {
+            hasReceivedResponse = true;
+            clearTimeout(providerCheckTimeout);
+            
+            // If we were in the middle of checking, add a note that response is now streaming
+            if (providerCheckStarted) {
+              console.log(chalk.green('Response started streaming.'));
+            }
+          }
+          
           // Check if aborted before processing chunk
           if (localAbortController.signal.aborted) {
             break;
@@ -136,25 +207,75 @@ export async function askQuestionWithStreaming(
           }
         }
       } catch (error: any) {
+        // Clean up the timeout
+        clearTimeout(providerCheckTimeout);
+        
+        // Restore original console.error
+        if (typeof originalConsoleError === 'function') {
+          console.error = originalConsoleError;
+        }
+        
         // If the error is due to abort, just return the response so far
         if (error.name === 'AbortError' || localAbortController.signal.aborted) {
           return fullResponse;
         }
+        
+        // Check if this is a network-related error indicating the provider is offline
+        if (error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED' || 
+            error.code === 'ECONNRESET' || error.code === 'ENOTFOUND' ||
+            error.message?.includes('timeout') || error.type === 'request-timeout' ||
+            (error.cause && (
+              error.cause.code === 'ECONNREFUSED' || 
+              error.cause.code === 'ETIMEDOUT' ||
+              error.cause.code === 'ECONNRESET'
+            ))) {
+          // Print error directly to console
+          console.log(chalk.yellow(`\n⚠️ Provider ${provider.name} appears to be offline or unreachable`));
+          console.log(chalk.cyan(`Try switching providers: ${chalk.bold('llamb provider:default')}`));
+          
+          // Force process exit after 500ms to prevent hanging but allow message to be seen
+          setTimeout(() => process.exit(1), 500);
+          
+          // Still throw the error for upstream handlers
+          throw new Error(`Provider ${provider.name} appears to be offline or unreachable`);
+        }
+        
+        // For other errors, print a simple message
+        console.log(chalk.red(`\n❌ Error with provider ${provider.name}: ${error.message}`));
+        
+        // Force process exit after 500ms to prevent hanging
+        setTimeout(() => process.exit(1), 500);
         throw error;
       }
 
+      // Clean up the timeout
+      clearTimeout(providerCheckTimeout);
+
       // Save the assistant's response to the session
       if (fullResponse) {
+        // No need to clean the response since we're not adding status messages to it
         sessionManager.addAssistantMessage(fullResponse);
+        return fullResponse;
       }
 
       return fullResponse || 'No response from LLM';
     } else {
       // Non-streaming version
-      const response = await openai.chat.completions.create({
-        model,
-        messages,
+      // Add a simple timeout for the non-streaming case
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('Request timed out, provider may be offline'));
+        }, 10000); // 10 second timeout for non-streaming
       });
+      
+      // Race between the actual request and the timeout
+      const response = await Promise.race([
+        openai.chat.completions.create({
+          model,
+          messages,
+        }),
+        timeoutPromise
+      ]);
 
       // Ensure we always return a string
       const content = response.choices[0]?.message?.content;
@@ -167,8 +288,19 @@ export async function askQuestionWithStreaming(
 
       return result;
     }
-  } catch (error) {
-    console.error('Error asking question:', error);
+  } catch (error: any) {
+    // Check if this is a network-related error indicating the provider is offline
+    if (error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED' || 
+        error.code === 'ECONNRESET' || error.code === 'ENOTFOUND' ||
+        error.message?.includes('timeout') || error.type === 'request-timeout' ||
+        (error.cause && (
+          error.cause.code === 'ECONNREFUSED' || 
+          error.cause.code === 'ETIMEDOUT' ||
+          error.cause.code === 'ECONNRESET'
+        ))) {
+      throw new Error(`Provider ${provider.name} appears to be offline or unreachable. Try switching providers with 'llamb provider:default'`);
+    }
+    
     throw new Error(`Failed to get response from ${provider.name}`);
   }
 }
@@ -272,4 +404,41 @@ export function setDefaultProvider(providerName: string): void {
   }
   
   config.set('defaultProvider', providerName);
+}
+
+// Delete a provider by name
+export async function deleteProvider(providerName: string): Promise<void> {
+  // Get current providers
+  const providers = config.get('providers');
+  const defaultProvider = config.get('defaultProvider');
+  
+  // Find the provider to delete
+  const providerIndex = providers.findIndex((p: LLMProvider) => p.name === providerName);
+  
+  if (providerIndex === -1) {
+    throw new Error(`Provider ${providerName} not found`);
+  }
+  
+  // Delete the provider from the list
+  providers.splice(providerIndex, 1);
+  
+  // Update providers list
+  config.set('providers', providers);
+  
+  // If we're deleting the default provider, set a new default if available
+  if (defaultProvider === providerName) {
+    if (providers.length > 0) {
+      config.set('defaultProvider', providers[0].name);
+    } else {
+      config.set('defaultProvider', '');
+    }
+  }
+  
+  // Delete the API key from secure storage
+  try {
+    await KeyManager.deleteApiKey(providerName);
+  } catch (error) {
+    // Continue even if key deletion fails - it might not exist
+    console.warn(`Could not delete API key for ${providerName}, it may not exist`);
+  }
 }

@@ -68,8 +68,15 @@ const StreamingResponse: FC<StreamingResponseProps> = ({
         }
       } catch (error) {
         if (!isCancelled) {
-          console.error('Error fetching response:', error);
+          // Don't display error message in the UI component
+          // The error is already handled in llm.ts
           setIsLoading(false);
+          
+          // Call onComplete to ensure proper cleanup
+          onComplete('');
+          
+          // Don't call process.exit() here, let the main error handler in llm.ts handle it
+          // This prevents exiting before the error message is shown
         }
       }
     };
