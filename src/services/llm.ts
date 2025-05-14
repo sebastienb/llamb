@@ -4,32 +4,334 @@ import { KeyManager } from '../utils/keyManager.js';
 import { SessionManager, Message } from './sessionManager.js';
 import chalk from 'chalk';
 
+/**
+ * Process response text to ensure thinking and reasoning blocks are visible
+ * This ensures that models that include thinking or reasoning blocks still show output
+ */
+function filterThinkBlocks(text: string): string {
+  // Check for various reasoning block formats
+  const reasoningPatterns = [
+    '<reasoning', '</reasoning>', 
+    '<reasoning_content>', '</reasoning_content>',
+    '[reasoning]', '[/reasoning]',
+    '[reasoning_content]', '[/reasoning_content]',
+    '<thinking>', '</thinking>',
+    '<thinking>', '</thinking>',
+    '```reasoning', '```'
+  ];
+  
+  // Log if we find any of the patterns
+  for (const pattern of reasoningPatterns) {
+    if (text.includes(pattern)) {
+      console.log(`Found reasoning pattern "${pattern}" in response`);
+      console.log('Content snippet around pattern:', 
+        text.substring(Math.max(0, text.indexOf(pattern) - 50), 
+                      Math.min(text.length, text.indexOf(pattern) + 100)));
+    }
+  }
+  
+  // No filtering - we want to show both the thinking blocks and reasoning_content blocks
+  return text;
+}
+
+/**
+ * Format output content for display or file saving
+ * This function:
+ * 1. Removes thinking/reasoning blocks and debugging tags
+ * 2. Removes code block delimiters when appropriate for file output
+ * 3. Cleans up formatting issues like excessive newlines
+ * 
+ * @param text The text content to format
+ * @param options Options to control formatting behavior
+ * @returns Formatted text content
+ */
+export function formatOutputContent(
+  text: string, 
+  options: { isFileOutput?: boolean } = {}
+): { content: string, detectedLanguage?: string, isPureCodeBlock: boolean } {
+  // Handle null/undefined input gracefully
+  if (!text) return { content: '', isPureCodeBlock: false };
+  
+  // Ensure text is a string
+  const inputText = typeof text === 'string' ? text : String(text || '');
+  
+  // Log info about the input text for debugging
+  console.log(chalk.dim(`Debug: formatOutputContent received ${inputText.length} characters`));
+  if (inputText.length > 0) {
+    console.log(chalk.dim(`Debug: First 40 chars: ${inputText.substring(0, 40).replace(/\n/g, '\\n')}...`));
+  } else {
+    console.log(chalk.yellow('Warning: Empty text passed to formatOutputContent'));
+    return { content: inputText, isPureCodeBlock: false }; // Return the original text if it's empty
+  }
+  
+  try {
+    let cleanedText = inputText;
+    
+    // Remove 🧠 Reasoning: blocks which are added for streaming
+    cleanedText = cleanedText.replace(/\n🧠 Reasoning:.+?(?=\n\n)/gs, '');
+    
+    // Remove <reasoning>...</reasoning> blocks
+    cleanedText = cleanedText.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
+    
+    // Remove <reasoning_content>...</reasoning_content> blocks
+    cleanedText = cleanedText.replace(/<reasoning_content>[\s\S]*?<\/reasoning_content>/gi, '');
+    
+    // Remove <thinking>...</thinking> blocks
+    cleanedText = cleanedText.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+    
+    // Remove <claude:...> tags and all content between them
+    cleanedText = cleanedText.replace(/<claude:[\s\S]*?>/gi, '');
+    
+    // Remove [reasoning]...[/reasoning] blocks
+    cleanedText = cleanedText.replace(/\[reasoning\][\s\S]*?\[\/reasoning\]/gi, '');
+    
+    // Remove [reasoning_content]...[/reasoning_content] blocks
+    cleanedText = cleanedText.replace(/\[reasoning_content\][\s\S]*?\[\/reasoning_content\]/gi, '');
+    
+    // Remove ```reasoning...``` blocks
+    cleanedText = cleanedText.replace(/```reasoning[\s\S]*?```/gi, '');
+    
+    // Clean up any remaining double newlines caused by removing blocks
+    cleanedText = cleanedText.replace(/\n{3,}/g, '\n\n');
+    
+    // Variables for code block detection
+    let detectedLanguage: string | undefined;
+    let isPureCodeBlock = false;
+    
+    // If cleaning removed all content, log a warning and return original
+    if (cleanedText.trim().length === 0 && inputText.trim().length > 0) {
+      console.log(chalk.yellow('Warning: Cleaning removed all content! Returning original text.'));
+      return { content: inputText, isPureCodeBlock: false };
+    }
+    
+    // Special handling for code blocks - only apply for file outputs
+    if (options.isFileOutput) {
+      // First check if the entire content is a single code block
+      const singleCodeBlockRegex = /^\s*```(?:[\w-]*)?[\s\S]*?```\s*$/;
+      
+      if (singleCodeBlockRegex.test(cleanedText.trim())) {
+        console.log(chalk.dim('Content appears to be a single code block. Removing markdown delimiters...'));
+        
+        // This is a pure code block response
+        isPureCodeBlock = true;
+        
+        // Extract the content between ``` markers, keeping language identifier if present
+        const match = cleanedText.trim().match(/^\s*```(?:[\w-]*)?[\s\n]*([\s\S]*?)```\s*$/);
+        
+        if (match && match[1]) {
+          // Look for language identifier
+          const languageMatch = cleanedText.trim().match(/^\s*```([\w-]+)/);
+          if (languageMatch && languageMatch[1]) {
+            detectedLanguage = languageMatch[1];
+            console.log(chalk.dim(`Detected language: ${detectedLanguage}`));
+          }
+          
+          // Use the content inside the code block
+          cleanedText = match[1].trim();
+          console.log(chalk.dim(`Removed code block delimiters. Content length: ${cleanedText.length} characters`));
+        }
+      } else {
+        // If it's not a single code block, check if it's 95% code blocks by content
+        // This helps with responses that are mostly code with minimal explanations
+        const codeBlockPattern = /```(?:[\w-]*)?[\s\n]*([\s\S]*?)```/g;
+        let match;
+        let codeBlocksContent = '';
+        const codeBlocks = [];
+        
+        // Extract all code blocks
+        while ((match = codeBlockPattern.exec(cleanedText)) !== null) {
+          if (match[1] && match[1].trim().length > 0) {
+            codeBlocksContent += match[1];
+            codeBlocks.push({
+              full: match[0],
+              content: match[1],
+              start: match.index,
+              end: match.index + match[0].length
+            });
+          }
+        }
+        
+        // Check if code blocks make up more than 95% of the content (by character count)
+        if (codeBlocks.length > 0 && codeBlocksContent.length > 0) {
+          const codeBlocksPercentage = (codeBlocksContent.length / cleanedText.length) * 100;
+          
+          console.log(chalk.dim(`Found ${codeBlocks.length} code blocks (${codeBlocksPercentage.toFixed(1)}% of content)`));
+          
+          // If it's a single code block that makes up almost all of the content (>95%)
+          if (codeBlocks.length === 1 && codeBlocksPercentage > 95) {
+            // Set pure code block flag - if it's almost 100% code with no significant text around it
+            isPureCodeBlock = codeBlocksPercentage > 98;
+            
+            // Check for language identifier in the code block
+            const singleBlockMatch = cleanedText.match(/```([\w-]+)/);
+            if (singleBlockMatch && singleBlockMatch[1]) {
+              detectedLanguage = singleBlockMatch[1];
+              console.log(chalk.dim(`Detected language in dominant code block: ${detectedLanguage}`));
+            }
+            
+            console.log(chalk.dim('Content is dominated by a single code block. Removing markdown delimiters...'));
+            cleanedText = codeBlocks[0].content.trim();
+          }
+          // If there are multiple code blocks and they make up almost all the content
+          else if (codeBlocks.length > 1 && codeBlocksPercentage > 95) {
+            // Multiple code blocks are NOT considered a "pure" code block for extension purposes
+            isPureCodeBlock = false;
+            
+            // Try to detect language from the first code block
+            const firstBlockMatch = cleanedText.match(/```([\w-]+)/);
+            if (firstBlockMatch && firstBlockMatch[1]) {
+              detectedLanguage = firstBlockMatch[1];
+              console.log(chalk.dim(`Detected language from first code block: ${detectedLanguage}`));
+            }
+            
+            console.log(chalk.dim('Content consists mostly of code blocks. Removing markdown delimiters...'));
+            
+            // If blocks are separated by empty lines, keep the separation
+            const processedContent = cleanedText.replace(codeBlockPattern, function(match, codeContent) {
+              return codeContent.trim();
+            });
+            
+            cleanedText = processedContent;
+          }
+        }
+      }
+    }
+    
+    console.log(chalk.dim(`Debug: formatOutputContent returning ${cleanedText.length} characters`));
+    return { content: cleanedText, detectedLanguage, isPureCodeBlock };
+  } catch (error) {
+    console.log(chalk.yellow(`Error in formatOutputContent: ${error}`));
+    return { content: inputText, isPureCodeBlock: false }; // Return original text on error
+  }
+}
+
 // We no longer automatically set API keys from environment variables.
 // Users should explicitly set them using the provider:add or provider:apikey commands.
 // This gives users more control and visibility over their configuration.
 
 export async function getModels(providerName?: string): Promise<string[]> {
-  const provider = await getProviderWithApiKey(providerName);
-  
-  // Validate base URL using WHATWG URL API
   try {
-    new URL(provider.baseUrl);
-  } catch (e) {
-    console.warn(`Invalid URL format for provider ${provider.name}: ${provider.baseUrl}`);
-    throw new Error(`Invalid base URL for provider ${provider.name}`);
-  }
-  
-  try {
-    const openai = new OpenAI({
-      apiKey: provider.apiKey || 'dummy-key',
-      baseURL: provider.baseUrl,
-    });
+    const provider = await getProviderWithApiKey(providerName);
+    console.log(chalk.dim(`Fetching models for ${provider.name}...`));
     
-    const models = await openai.models.list();
-    return models.data.map(model => model.id);
-  } catch (error) {
-    console.error('Error fetching models:', error);
-    throw new Error(`Failed to fetch models from ${provider.name}`);
+    // Get API key
+    let apiKey = 'dummy-key';
+    if (!provider.noAuth) {
+      try {
+        apiKey = await KeyManager.getApiKey(provider.name) || 'dummy-key';
+      } catch (e) {
+        // Silent fail - we'll try with dummy key
+      }
+    }
+    
+    // Validate base URL
+    try {
+      new URL(provider.baseUrl);
+    } catch (e) {
+      throw new Error(`Invalid base URL for provider ${provider.name}`);
+    }
+    
+    try {
+      // Try /v1/models endpoint
+      let modelsUrl = new URL('/v1/models', provider.baseUrl).toString();
+      
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      
+      if (!provider.noAuth && apiKey !== 'dummy-key') {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+      
+      // Make the request
+      let response = await fetch(modelsUrl, {
+        method: 'GET',
+        headers,
+      });
+      
+      // Try alternative endpoint if first one fails
+      if (!response.ok && response.status === 404) {
+        modelsUrl = new URL('/models', provider.baseUrl).toString();
+        response = await fetch(modelsUrl, {
+          method: 'GET',
+          headers,
+        });
+      }
+      
+      // Parse response if successful
+      if (response.ok) {
+        const responseText = await response.text();
+        const data = JSON.parse(responseText);
+        
+        // Extract models from standard OpenAI format
+        if (data.object === 'list' && data.data && Array.isArray(data.data)) {
+          return data.data.map((model: any) => model.id || model.name);
+        }
+        
+        // Extract models from direct array format
+        if (Array.isArray(data)) {
+          return data.map((model: any) => model.id || model.name);
+        }
+        
+        // Try other common formats
+        for (const key of ['models', 'model_names', 'model_list', 'available_models']) {
+          if (data[key] && Array.isArray(data[key])) {
+            return data[key].map((item: any) => {
+              if (typeof item === 'string') return item;
+              if (item && (item.id || item.name)) return item.id || item.name;
+              return JSON.stringify(item);
+            });
+          }
+        }
+        
+        // Deep search for model IDs
+        const extractedModels = new Set<string>();
+        function findPotentialModels(obj: any) {
+          if (!obj) return;
+          
+          if (typeof obj === 'string' && obj.length > 0) {
+            if (obj.match(/^(gpt|llama|gemma|mistral|phi|claude|falcon|orca|yi|qwen)/i)) {
+              extractedModels.add(obj);
+            }
+          } else if (Array.isArray(obj)) {
+            obj.forEach(item => findPotentialModels(item));
+          } else if (typeof obj === 'object') {
+            for (const key in obj) {
+              if (key === 'id' || key === 'name' || key === 'model') {
+                const value = obj[key];
+                if (typeof value === 'string' && value.length > 0) {
+                  extractedModels.add(value);
+                }
+              } else {
+                findPotentialModels(obj[key]);
+              }
+            }
+          }
+        }
+        
+        findPotentialModels(data);
+        
+        if (extractedModels.size > 0) {
+          return Array.from(extractedModels);
+        }
+      }
+      
+      // Fallback to default model if available
+      if (provider.defaultModel) {
+        return [provider.defaultModel];
+      }
+      
+      return [];
+    } catch (fetchError: any) {
+      // Return provider default model if available
+      if (provider.defaultModel) {
+        return [provider.defaultModel];
+      }
+      return [];
+    }
+  } catch (error: any) {
+    console.error(chalk.red(`Error fetching models: ${error.message}`));
+    return [];
   }
 }
 
@@ -79,6 +381,7 @@ export async function askQuestionWithStreaming(
     const openai = new OpenAI({
       apiKey: provider.apiKey || 'dummy-key',
       baseURL: actualBaseUrl,
+      timeout: 300000, // 5 minutes timeout for GhostLM and other slower providers
     });
 
     // Get session manager for conversation history
@@ -118,7 +421,7 @@ export async function askQuestionWithStreaming(
       let providerCheckComplete = false;
       let providerIsOnline = false;
       
-      // Set up a timeout to check if the provider is online after 3 seconds of no response
+      // Set up a timeout to check if the provider is online after 15 seconds of no response
       const providerCheckTimeout = setTimeout(async () => {
         if (!hasReceivedResponse && !providerCheckStarted) {
           providerCheckStarted = true;
@@ -132,6 +435,7 @@ export async function askQuestionWithStreaming(
             const checkClient = new OpenAI({
               apiKey: provider.apiKey || 'dummy-key',
               baseURL: actualBaseUrl,
+              timeout: 0, // No timeout - allow unlimited time for slow providers
             });
             
             // Try to list models as a quick health check
@@ -150,7 +454,7 @@ export async function askQuestionWithStreaming(
             providerCheckComplete = true;
           }
         }
-      }, 3000);
+      }, 15000); // 15 seconds instead of 3 - GhostLM and other local LLMs might be slower to respond
 
       // Store the original console.error outside the try block
       const originalConsoleError = console.error;
@@ -177,6 +481,11 @@ export async function askQuestionWithStreaming(
           signal: localAbortController.signal
         };
 
+        // Set up to collect the streaming reasoning content separately
+        let streamedReasoningContent = '';
+        let isShowingReasoning = false;
+        let previousWasReasoning = false;
+        
         const stream = await openai.chat.completions.create({
           model,
           messages,
@@ -200,10 +509,58 @@ export async function askQuestionWithStreaming(
             break;
           }
 
+          // Check for content in the standard content field
           const content = chunk.choices[0]?.delta?.content || '';
-          if (content) {
-            streamCallback(content);
-            fullResponse += content;
+          
+          // Check for reasoning_content in the delta message
+          // Use type assertion to handle custom properties in the API response
+          const reasoningContent = (chunk.choices[0]?.delta as any)?.reasoning_content || '';
+          
+          // Track if this chunk contains reasoning content
+          const hasReasoningInThisChunk = !!reasoningContent;
+          
+          // Handle the streaming of both content types
+          if (content || reasoningContent) {
+            let streamedChunk = '';
+            
+            // Process reasoning content
+            if (reasoningContent) {
+              // If this is the first reasoning chunk, add the header
+              if (!isShowingReasoning) {
+                streamedChunk += '\n🧠 Reasoning: ';
+                isShowingReasoning = true;
+              }
+              
+              // Accumulate the reasoning content
+              streamedReasoningContent += reasoningContent;
+              streamedChunk += reasoningContent;
+              previousWasReasoning = true;
+            } 
+            // Process regular content - but add a separator if switching from reasoning
+            else if (content) {
+              // If we're transitioning from reasoning to regular content, add a separator
+              if (previousWasReasoning && isShowingReasoning) {
+                streamedChunk += '\n\n';
+                previousWasReasoning = false;
+              }
+              
+              // Check for various formats of reasoning blocks within the content itself
+              if (content.includes('<reasoning') || content.includes('</reasoning') || 
+                  content.includes('<reasoning_content') || content.includes('</reasoning_content') ||
+                  content.includes('thinking:') || content.includes('reasoning:') ||
+                  content.includes('<thinking>') || content.includes('</thinking>') ||
+                  content.includes('<reasoning>') || content.includes('</reasoning>') ||
+                  content.includes('<claude:')) {
+                console.log('Found reasoning/thinking block in content chunk:', content);
+              }
+              
+              streamedChunk += content;
+            }
+            
+            if (streamedChunk) {
+              streamCallback(streamedChunk);
+              fullResponse += streamedChunk;
+            }
           }
         }
       } catch (error: any) {
@@ -229,23 +586,21 @@ export async function askQuestionWithStreaming(
               error.cause.code === 'ETIMEDOUT' ||
               error.cause.code === 'ECONNRESET'
             ))) {
-          // Print error directly to console
+          // Print warning to console but don't terminate
           console.log(chalk.yellow(`\n⚠️ Provider ${provider.name} appears to be offline or unreachable`));
           console.log(chalk.cyan(`Try switching providers: ${chalk.bold('llamb provider:default')}`));
+          console.log(chalk.yellow(`Continuing to wait for a response... Press ESC to cancel.`));
           
-          // Force process exit after 500ms to prevent hanging but allow message to be seen
-          setTimeout(() => process.exit(1), 500);
-          
-          // Still throw the error for upstream handlers
-          throw new Error(`Provider ${provider.name} appears to be offline or unreachable`);
+          // Return the current response instead of exiting or throwing
+          return fullResponse;
         }
         
-        // For other errors, print a simple message
+        // For other errors, print a warning message but don't terminate
         console.log(chalk.red(`\n❌ Error with provider ${provider.name}: ${error.message}`));
+        console.log(chalk.yellow(`Continuing to wait for a response... Press ESC to cancel.`));
         
-        // Force process exit after 500ms to prevent hanging
-        setTimeout(() => process.exit(1), 500);
-        throw error;
+        // Return what we have instead of exiting
+        return fullResponse;
       }
 
       // Clean up the timeout
@@ -253,33 +608,42 @@ export async function askQuestionWithStreaming(
 
       // Save the assistant's response to the session
       if (fullResponse) {
-        // No need to clean the response since we're not adding status messages to it
-        sessionManager.addAssistantMessage(fullResponse);
-        return fullResponse;
+        // Process the response, including <think>...</think> and reasoning_content blocks
+        // We're keeping all content visible to the user as it can be useful for debugging and understanding
+        const filteredResponse = filterThinkBlocks(fullResponse);
+        sessionManager.addAssistantMessage(filteredResponse);
+        return filteredResponse;
       }
 
       return fullResponse || 'No response from LLM';
     } else {
       // Non-streaming version
-      // Add a simple timeout for the non-streaming case
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error('Request timed out, provider may be offline'));
-        }, 10000); // 10 second timeout for non-streaming
+      // No timeout - just direct API call
+      const response = await openai.chat.completions.create({
+        model,
+        messages,
       });
-      
-      // Race between the actual request and the timeout
-      const response = await Promise.race([
-        openai.chat.completions.create({
-          model,
-          messages,
-        }),
-        timeoutPromise
-      ]);
 
       // Ensure we always return a string
-      const content = response.choices[0]?.message?.content;
-      const result = content ? String(content) : 'No response from LLM';
+      const content = response.choices[0]?.message?.content || '';
+      // Use type assertion to handle custom properties in the API response
+      const reasoningContent = (response.choices[0]?.message as any)?.reasoning_content || '';
+      
+      // Combine both content and reasoning_content if present
+      let result = '';
+      
+      if (reasoningContent) {
+        console.log('Found reasoning_content in non-streaming response:', reasoningContent);
+        result += `\n🧠 Reasoning: ${reasoningContent}\n\n`;
+      }
+      
+      result += content || 'No response from LLM';
+      
+      // Process the response, including <think>...</think> and reasoning_content blocks
+      // We keep these blocks visible as they can be useful to the user
+      if (result) {
+        result = filterThinkBlocks(result);
+      }
 
       // Save the assistant's response to the session
       if (content) {
@@ -395,7 +759,7 @@ export async function addProvider(provider: LLMProvider & { apiKey?: string }): 
   }
 }
 
-export function setDefaultProvider(providerName: string): void {
+export function setDefaultProvider(providerName: string, modelName?: string): void {
   const providers = config.get('providers');
   const provider = providers.find((p: LLMProvider) => p.name === providerName);
   
@@ -403,6 +767,24 @@ export function setDefaultProvider(providerName: string): void {
     throw new Error(`Provider ${providerName} not found`);
   }
   
+  // If a model was provided, update the provider's default model
+  if (modelName) {
+    // Find the provider in the array
+    const providerIndex = providers.findIndex((p: LLMProvider) => p.name === providerName);
+    
+    // Update the provider with the new default model
+    if (providerIndex >= 0) {
+      providers[providerIndex] = {
+        ...providers[providerIndex],
+        defaultModel: modelName
+      };
+      
+      // Save the updated providers array
+      config.set('providers', providers);
+    }
+  }
+  
+  // Set the default provider
   config.set('defaultProvider', providerName);
 }
 

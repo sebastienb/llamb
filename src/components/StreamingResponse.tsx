@@ -2,6 +2,7 @@ import React, { FC, useState, useEffect } from 'react';
 import { Text, Box, render, useInput } from 'ink';
 import Spinner from 'ink-spinner';
 import { marked } from 'marked';
+import chalk from 'chalk';
 
 interface StreamingResponseProps {
   question: string;
@@ -35,12 +36,10 @@ const StreamingResponse: FC<StreamingResponseProps> = ({
         abortController.abort();
       }
 
-      // Exit after a brief delay to show the cancelled message
-      setTimeout(() => {
-        console.log('\n');
-        console.log('\x1b[31mRequest cancelled by user\x1b[0m'); // Red text
-        process.exit(0);
-      }, 200);
+      // Show cancelled message but don't force exit
+      console.log('\n');
+      console.log('\x1b[31mRequest cancelled by user\x1b[0m'); // Red text
+      // Don't call process.exit - allow app to continue
     }
   });
 
@@ -56,14 +55,35 @@ const StreamingResponse: FC<StreamingResponseProps> = ({
         if (!isCancelled) {
           setIsComplete(true);
           setIsLoading(false);
-          onComplete(fullResponse);
 
-          // Auto-exit for non-chat mode after a short delay to allow UI updates
+          // In non-chat mode, just clean up without exiting
           if (!isChatMode) {
+            console.log(''); // Add a newline for cleaner output
+            // Ensure the response is valid and not undefined or null
+            const safeResponse = typeof fullResponse === 'string' ? fullResponse : String(fullResponse || '');
+            console.log(chalk.dim(`Debug: StreamingResponse preparing to call onComplete with ${safeResponse.length} characters`));
+            console.log(chalk.dim(`Debug: First 50 chars of response: ${safeResponse.substring(0, 50).replace(/\n/g, '\\n')}...`));
+            
+            // Emit content ready event with length information
+            // This lets the main process know the content is ready for file operations
+            (process as any).emit('llamb_content_ready', { length: safeResponse.length });
+            
+            // Allow time for rendering to complete before exiting
             setTimeout(() => {
-              console.log(''); // Add a newline for cleaner output
-              process.exit(0);
-            }, 300);
+              onComplete(safeResponse);
+            }, 500);
+            return; // Prevent immediate call to onComplete
+          } else {
+            // Only call onComplete immediately in chat mode
+            // Ensure the response is valid and not undefined or null
+            const safeResponse = typeof fullResponse === 'string' ? fullResponse : String(fullResponse || '');
+            console.log(chalk.dim(`Debug: StreamingResponse (chat mode) calling onComplete with ${safeResponse.length} characters`));
+            console.log(chalk.dim(`Debug: First 50 chars of response: ${safeResponse.substring(0, 50).replace(/\n/g, '\\n')}...`));
+            
+            // Emit content ready event for chat mode too
+            (process as any).emit('llamb_content_ready', { length: safeResponse.length });
+            
+            onComplete(safeResponse);
           }
         }
       } catch (error) {
@@ -103,6 +123,15 @@ const StreamingResponse: FC<StreamingResponseProps> = ({
       };
     }
   }, [isLoading, response, isComplete, isCancelled]);
+
+  // Use effect to notify when rendering is complete
+  useEffect(() => {
+    if (isComplete && !isLoading && response) {
+      // Notify that rendering is complete using a custom event
+      // instead of writing directly to stdout
+      (process as any).emit('llamb_render_complete');
+    }
+  }, [isComplete, isLoading, response]);
 
   return (
     <Box flexDirection="column" padding={1}>

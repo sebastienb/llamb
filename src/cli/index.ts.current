@@ -1,0 +1,312 @@
+#!/usr/bin/env node
+
+// Import polyfills first
+import '../utils/polyfills.js';
+
+import { Command } from 'commander';
+import chalk from 'chalk';
+import OpenAI from 'openai';
+import boxen from 'boxen';
+import wrap from 'word-wrap';
+import terminalLink from 'terminal-link';
+import ora from 'ora';
+import { marked } from 'marked';
+//@ts-ignore
+import TerminalRenderer from 'marked-terminal';
+import hljs from 'highlight.js';
+import path from 'path';
+// Import inquirer directly now that we have polyfills
+import inquirer from 'inquirer';
+import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider, getProviderWithApiKey, deleteProvider } from '../services/llm.js';
+import { KeyManager } from '../utils/keyManager.js';
+import { SessionManager } from '../services/sessionManager.js';
+import { readFile, writeFile, fileExists, generateUniqueFilename } from '../utils/fileUtils.js';
+import config from '../config/index.js';
+import { renderStreamingResponse } from '../components/StreamingResponse.js';
+import { registerPromptCommands } from './promptCli.js';
+import { processPrompt, formatQuestionWithPrompt } from '../services/promptExecution.js';
+
+// Check for required system dependencies
+function checkDependencies() {
+  const { hasRequiredDeps, installCommand } = KeyManager.checkDependencies();
+  if (!hasRequiredDeps) {
+    console.error(chalk.red('Error: Missing system dependencies required for secure credential storage.'));
+    console.error(chalk.yellow('To fix this issue, please install the required dependencies:'));
+    console.error(chalk.cyan(installCommand));
+    console.error(chalk.yellow('After installing dependencies, run: npm rebuild keytar'));
+    console.error('');
+    console.error(chalk.dim('You can still use local providers that don\'t require authentication.'));
+    console.error('');
+  }
+  return hasRequiredDeps;
+}
+
+// Set up Terminal Renderer for markdown
+// Need to use ts-ignore since the types for marked-terminal are problematic
+//@ts-ignore
+marked.setOptions({ renderer: new TerminalRenderer() });
+
+const program = new Command();
+
+// Check for dependencies on startup, but don't block operation
+// This provides an early warning to users
+checkDependencies();
+
+// Read package version
+import { readFileSync } from 'fs';
+import * as readline from 'readline';
+const packageJson = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+
+program
+  .name('llamb')
+  .description('CLI LLM client that answers questions directly from your terminal')
+  .version(packageJson.version)
+  .addHelpText('after', `
+Examples:
+  $ llamb "What is the capital of France?"     Ask a simple question
+  $ llamb -f script.js "Explain this code"     Include a file with your question
+  $ llamb "Summarize this" -f document.txt     Process file contents
+  $ llamb -t summarize -f document.txt         Use a saved prompt template
+  $ llamb "Generate JSON" -o                   Save response (prompts for filename)
+  $ llamb "Generate JSON" -o result.json       Save response to a specific file
+  $ llamb -n "What is 2+2?"                    Ask without using conversation history
+  $ llamb -c "Tell me about France"            Start in continuous conversation mode
+  $ llamb /history                             View conversation history
+  $ llamb /clear                               Clear conversation history
+  $ llamb /new                                 Start a new conversation
+  $ llamb /debug                               Show terminal session debug info
+  $ llamb /model                               Change the default model for current provider
+  $ llamb model:default                        Select default model for the current provider
+  $ llamb model:default -p openai              Select default model for a specific provider
+
+Prompt Management:
+  $ llamb prompt:list                          List all saved prompts
+  $ llamb prompt:add <name>                    Create a new prompt template
+  $ llamb prompt:edit <name>                   Edit a prompt template
+  $ llamb prompt:delete <name>                 Delete a prompt template
+  $ llamb prompt:show <name>                   Show a prompt template
+
+Provider Management:
+  $ llamb provider:add                         Add a new provider interactively
+  $ llamb provider:edit                        Edit an existing provider interactively
+  $ llamb provider:delete                      Delete a provider interactively
+  $ llamb provider:apikey                      Update a provider's API key
+  $ llamb provider:default                     Set the default provider
+  $ llamb providers                            List all configured providers
+  $ llamb provider:edit --name openai --url https://api.openai.com/v1 --model gpt-4o
+                                               Edit a provider non-interactively
+  $ llamb provider:delete --name openai        Delete a provider non-interactively
+  $ llamb provider:delete --name openai --force Delete a provider without confirmation
+`);
+
+program
+  .arguments('[question...]')
+  .description('Ask a question to the LLM')
+  .option('-c, --chat', 'Enable continuous conversation mode for follow-up questions')
+  .option('--no-chat', 'Disable continuous conversation mode (default)')
+  .option('-m, --model <model>', 'Specify the model to use')
+  .option('-p, --provider <provider>', 'Specify the provider to use')
+  .option('-u, --baseUrl <baseUrl>', 'Specify a custom base URL for this request')
+  .option('-s, --stream', 'Stream the response as it arrives (default: true)')
+  .option('--progress-only', 'Show progress indicator without streaming content (prevents scrollback artifacts)')
+  .option('--live-stream', 'Force live streaming of content even if progress-only mode is enabled')
+  .option('--ink', 'Use ink-based UI for rendering (prevents scrollback artifacts)')
+  .option('--no-ink', 'Disable ink-based UI rendering (use traditional rendering)')
+  .option('-n, --no-history', 'Do not use conversation history for this request')
+  .option('-f, --file <path>', 'Path to a file to include with your question')
+  .option('-o, --output [path]', 'Save the response to a file (will prompt for filename)')
+  .option('-t, --prompt <name>', 'Use a saved prompt template for your question')
+  .option('--overwrite', 'Overwrite existing files without prompting')
+  .action(async (args, options) => {
+    try {
+      // Check for slash commands which should be handled directly
+      if (args.length === 1 && args[0].startsWith('/')) {
+        const slashCommand = args[0].substring(1);
+
+        // Direct execution of slash commands without depending on Commander's command lookup
+        switch (slashCommand) {
+          case 'models':
+            try {
+              console.log(chalk.dim('Fetching models...'));
+              const models = await getModels(options.provider);
+              console.log(chalk.bold('\nAvailable Models:'));
+              models.forEach(model => {
+                console.log(`- ${model}`);
+              });
+              return;
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
+              return;
+            }
+
+          case 'clear':
+            try {
+              const sessionManager = SessionManager.getInstance();
+              sessionManager.clearSession();
+              console.log(chalk.green('Conversation context has been cleared.'));
+              return;
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
+            }
+            return;
+            
+          case 'new':
+            try {
+              const sessionManager = SessionManager.getInstance();
+              sessionManager.createNewSession();
+              console.log(chalk.green('Started a new conversation context.'));
+              return;
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
+            }
+            return;
+
+          case 'history':
+            try {
+              const sessionManager = SessionManager.getInstance();
+              const messages = sessionManager.getMessages();
+              
+              if (messages.length === 0) {
+                console.log(chalk.yellow('No conversation history yet.'));
+                return;
+              }
+
+              console.log(chalk.bold('Conversation History:'));
+
+              // Get terminal width for the output box
+              const terminalWidth = process.stdout.columns || 80;
+              const maxWidth = Math.min(terminalWidth - 10, 100);
+
+              // Display each message with appropriate styling
+              messages.forEach((message, index) => {
+                const roleColor = message.role === 'user' ? chalk.blue : chalk.green;
+                const roleName = message.role === 'user' ? 'You' : 'Assistant';
+                
+                console.log(roleColor(chalk.bold(`${roleName}:`)));
+                
+                // Create a boxed message
+                const boxedMessage = boxen(wrap(message.content, { width: maxWidth - 4, indent: '' }), {
+                  padding: 1,
+                  borderColor: message.role === 'user' ? 'blue' : 'green',
+                  borderStyle: 'round',
+                  width: maxWidth,
+                });
+
+                console.log(boxedMessage);
+                
+                // Add spacing between messages
+                if (index < messages.length - 1) {
+                  console.log('');
+                }
+              });
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
+            }
+            return;
+            
+          case 'model':
+            try {
+              console.log(chalk.dim('Fetching models...'));
+              const models = await getModels(options.provider);
+              
+              // Get the current provider info
+              const provider = await getProviderWithApiKey(options.provider);
+              
+              const answers = await inquirer.prompt([
+                {
+                  type: 'list',
+                  name: 'selectedModel',
+                  message: `Select a default model for ${provider.name}:`,
+                  choices: models,
+                  default: provider.defaultModel || models[0]
+                }
+              ]);
+              
+              // Update the provider's default model
+              await setDefaultProvider(provider.name, answers.selectedModel);
+              console.log(chalk.green(`✓ Default model for ${provider.name} set to: ${answers.selectedModel}`));
+              return;
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
+              return;
+            }
+            
+          case 'debug':
+            try {
+              const sessionManager = SessionManager.getInstance();
+              const terminalId = sessionManager.getTerminalId();
+              const currentSession = sessionManager.getCurrentSession();
+              
+              console.log(chalk.bold('Terminal Session Debug Info:'));
+              console.log(chalk.dim('────────────────────────────'));
+              console.log(`Terminal ID: ${chalk.cyan(terminalId)}`);
+              console.log(`Session ID:  ${chalk.cyan(currentSession.id)}`);
+              console.log(`Created:     ${chalk.cyan(new Date(currentSession.createdAt).toLocaleString())}`);
+              console.log(`Updated:     ${chalk.cyan(new Date(currentSession.updatedAt).toLocaleString())}`);
+              console.log(`Messages:    ${chalk.cyan(currentSession.messages.length.toString())}`);
+              console.log(`Working Dir: ${chalk.cyan(process.cwd())}`);
+              console.log(chalk.dim('────────────────────────────'));
+              console.log(chalk.dim('This information can help with troubleshooting.'));
+              return;
+            } catch (error: any) {
+              console.error(chalk.red('Error:'), error.message);
+              return;
+            }
+
+          default:
+            console.log(chalk.yellow(`Unknown command: /${slashCommand}`));
+            console.log(chalk.cyan('Available commands:'));
+            console.log(chalk.dim('/clear    - Clear conversation history'));
+            console.log(chalk.dim('/new      - Start a new conversation'));
+            console.log(chalk.dim('/history  - View conversation history'));
+            console.log(chalk.dim('/models   - List available models'));
+            console.log(chalk.dim('/model    - Change the default model'));
+            console.log(chalk.dim('/debug    - Show terminal session debug info'));
+            return;
+        }
+      }
+
+      if (args.length === 0 && !options.prompt) {
+        console.log(chalk.yellow('No question provided. Use --help for usage information.'));
+        return;
+      }
+
+      let question = args.join(' ');
+
+      // Handle file input if provided
+      let fileContent: string | undefined;
+      if (options.file) {
+        try {
+          console.log(chalk.dim(`Reading file: ${options.file}`));
+          fileContent = readFile(options.file);
+          console.log(chalk.green(`✓ File loaded (${(fileContent.length / 1024).toFixed(1)} KB)`));
+        } catch (error: any) {
+          console.error(chalk.red(`Error reading file: ${error.message}`));
+          
+          // Exit when done in non-chat mode with error code
+          if (!options.chat) {
+            exitWhenDone(1);
+          }
+          return;
+        }
+      }
+      
+      // Handle prompt template if specified
+      if (options.prompt) {
+        try {
+          // Process the prompt with placeholders
+          const processedPrompt = processPrompt(options.prompt, options.file, options.output);
+          // Format the question with the prompt
+          question = formatQuestionWithPrompt(question, processedPrompt);
+        } catch (error: any) {
+          console.error(chalk.red(`Error processing prompt: ${error.message}`));
+          console.log(chalk.cyan('Available prompts:'));
+          console.log(chalk.bold('  llamb prompt:list'));
+          
+          // Exit when done in non-chat mode with error code
+          if (!options.chat) {
+            exitWhenDone(1);
+          }
+          return;
+        }
+      }

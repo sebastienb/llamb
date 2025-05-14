@@ -10,6 +10,7 @@ llamb \- CLI LLM client that answers questions directly from your terminal
 is a command-line interface for working with Large Language Models (LLMs) directly from your terminal.
 It supports multiple providers (OpenAI, Anthropic, Mistral, etc.), conversation history management,
 file input/output, terminal-specific sessions, smart error handling for offline providers,
+saved prompt templates, automatic file extension detection for code outputs,
 and comprehensive provider management.
 .SH OPTIONS
 .TP
@@ -47,7 +48,10 @@ Do not use conversation history for this request
 Path to a file to include with your question
 .TP
 .B \-o, \-\-output [path]
-Save the response to a file. If path is not provided, you will be prompted for a filename.
+Save the response to a file. If path is not provided, you will be prompted for a filename. When saving code responses, appropriate file extensions will be automatically applied if the response is a pure code block.
+.TP
+.B \-t, \-\-prompt <name>
+Use a saved prompt template for your question
 .TP
 .B \-\-overwrite
 Overwrite existing files without prompting
@@ -100,6 +104,21 @@ Display terminal and session debugging information
 .TP
 .B llamb config:progress-mode
 Configure UI rendering mode (ink, progress-only, or traditional)
+.TP
+.B llamb prompt:list
+List all saved prompt templates
+.TP
+.B llamb prompt:add
+Create a new prompt template
+.TP
+.B llamb prompt:edit
+Edit an existing prompt template
+.TP
+.B llamb prompt:delete
+Delete a prompt template
+.TP
+.B llamb prompt:show
+Show details of a specific prompt template
 .SH SLASH COMMANDS
 Llamb supports short-form slash commands when entering questions. In continuous conversation mode (-c), there are additional slash commands available:
 .TP
@@ -202,6 +221,52 @@ Use progress-only mode to prevent scrollback artifacts:
 .TP
 Configure UI rendering mode:
 .B llamb config:progress-mode --ink
+.TP
+Use a saved prompt template:
+.B llamb -t summarize -f document.txt
+.TP
+Use a prompt template with direct input:
+.B llamb -t code-review "function add(a, b) { return a + b; }"
+.TP
+Save a code response with automatic file type detection:
+.B llamb "Write a Python function to calculate fibonacci" -o fibonacci
+.SH PROMPT TEMPLATES
+Prompt templates allow you to save and reuse common prompts with placeholders:
+.TP
+.B {input}
+Gets replaced with the command-line question text
+.TP
+.B {file}
+Gets replaced with file contents when using -f flag
+.TP
+.B {filename}
+Gets replaced with the filename when using -f flag
+.PP
+For example, a prompt template could be:
+.PP
+.nf
+Please analyze the following code from {filename}:
+
+{file}
+
+Focus on these aspects:
+1. Performance
+2. Security
+3. Readability
+
+Additional notes: {input}
+.fi
+.PP
+This can be used with:
+.B llamb -t analyze -f script.js "Look for memory leaks"
+.SH SMART FILE EXTENSION DETECTION
+When saving responses to files without specifying an extension, LLaMB automatically:
+.TP
+- Applies language-specific extensions for pure code block responses (.js, .py, etc.)
+.TP
+- Defaults to .txt for mixed content (explanations + code)
+.TP
+- Always respects explicitly provided file extensions
 .SH ENVIRONMENT
 .TP
 .B OPENAI_API_KEY
@@ -212,7 +277,7 @@ If set, will be used as the default API key for OpenAI
 Directory where conversation sessions are stored
 .TP
 .B ~/.config/llamb/
-Configuration directory for provider settings
+Configuration directory for provider settings and prompt templates
 .SH NOTES
 Terminal-specific sessions are determined using environment variables such as TTY, PID, and terminal-specific session IDs.
 Each terminal window will maintain its own conversation history.

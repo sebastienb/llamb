@@ -8,6 +8,8 @@ LLaMB is a command-line tool that allows you to interact with Large Language Mod
 - 💬 **Conversation history** - Follow-up on previous questions with context
 - 🔄 **Continuous conversation** - Interactive chat mode for follow-up questions
 - 📄 **File handling** - Include file contents in your questions and save responses to files
+- 🔤 **Smart file extensions** - Automatically uses appropriate file extensions for code outputs
+- 📝 **Prompt templates** - Save and reuse common prompts to streamline frequent tasks
 - 🔄 **Multiple providers** - Support for OpenAI, Anthropic, Mistral, Ollama, and more
 - 🔐 **Secure** - API keys stored securely in your system's credential manager
 - 🖥️ **Local models** - Works with local models like Ollama and LM Studio
@@ -325,6 +327,101 @@ llamb config:progress-mode
 ```bash
 llamb -m llama2 -p ollama -f code.py -o analysis.md "Analyze this code"
 ```
+
+### Saved Prompt Templates
+
+LLaMB allows you to save and reuse common prompts to streamline your workflow.
+
+#### List all saved prompts
+
+```bash
+llamb prompt:list
+```
+
+#### Add a new prompt template
+
+```bash
+llamb prompt:add
+```
+
+This will prompt you for:
+- A name for the prompt (e.g., "summarize")
+- The prompt text (e.g., "Please summarize the following text in bullet points:")
+- Optional description for your reference
+
+#### Use a saved prompt
+
+```bash
+# Use with a file
+llamb -t summarize -f document.txt
+
+# Use with direct input
+llamb -t code-review "function add(a, b) { return a + b; }"
+
+# Combine with other options
+llamb -t translate -p openai -m gpt-4 -o spanish.txt "Hello world"
+```
+
+#### Edit a saved prompt
+
+```bash
+llamb prompt:edit
+```
+
+#### Delete a prompt template
+
+```bash
+llamb prompt:delete
+```
+
+#### Show a prompt's details
+
+```bash
+llamb prompt:show summarize
+```
+
+#### Using placeholders in prompts
+
+Prompt templates can include special placeholders that get replaced when used:
+
+- `{input}` - Gets replaced with the command-line question text
+- `{file}` - Gets replaced with file contents when using -f flag
+- `{filename}` - Gets replaced with the filename when using -f flag
+
+Example prompt template with placeholders:
+```
+Please analyze the following code from {filename}:
+
+{file}
+
+Focus on these aspects:
+1. Performance
+2. Security
+3. Readability
+
+Additional notes: {input}
+```
+
+When used as `llamb -t analyze -f script.js "Focus on error handling"`, the placeholders will be replaced with the appropriate values.
+
+### Smart File Extensions
+
+When saving responses to files, LLaMB automatically detects the content type and applies appropriate file extensions:
+
+```bash
+# When asking for code and saving with -o flag (without extension)
+llamb "Write a Python function to calculate fibonacci" -o fibonacci
+# Will save as fibonacci.py if response is only code
+
+# When providing a filename without extension
+llamb "Write a JavaScript React component" -o component
+# Will save as component.jsx if response is purely JSX code
+```
+
+This feature:
+- Only applies language extensions when the content is a pure code block
+- Defaults to .txt for mixed content (explanations + code)
+- Always respects explicitly provided extensions
 
 ## License
 

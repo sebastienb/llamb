@@ -17,39 +17,7 @@ import hljs from 'highlight.js';
 import path from 'path';
 // Import inquirer directly now that we have polyfills
 import inquirer from 'inquirer';
-import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider, getProviderWithApiKey, deleteProvider, formatOutputContent } from '../services/llm.js';
-
-// Global auto-close prevention system
-// This allows any feature to prevent the app from closing while user interaction is needed
-const preventAutoClose = {
-  _preventExitCount: 0,
-  
-  // Request to prevent app from auto-closing
-  prevent: (reason: string = 'unknown') => {
-    // @ts-ignore - Add a global flag to make this available everywhere
-    process._llamb_prevent_exit = true;
-    preventAutoClose._preventExitCount++;
-    console.log(chalk.dim(`Auto-close prevented: ${reason}`));
-    return preventAutoClose._preventExitCount;
-  },
-  
-  // Release the prevention (when interaction is done)
-  release: () => {
-    preventAutoClose._preventExitCount = Math.max(0, preventAutoClose._preventExitCount - 1);
-    if (preventAutoClose._preventExitCount === 0) {
-      // @ts-ignore - Clear the global flag when all preventions are released
-      process._llamb_prevent_exit = false;
-      console.log(chalk.dim(`Auto-close resumed`));
-    }
-    return preventAutoClose._preventExitCount;
-  },
-  
-  // Check if app is prevented from closing
-  isPrevented: (): boolean => {
-    // @ts-ignore - Access the global flag
-    return process._llamb_prevent_exit === true;
-  }
-};
+import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider, getProviderWithApiKey, deleteProvider } from '../services/llm.js';
 import { KeyManager } from '../utils/keyManager.js';
 import { SessionManager } from '../services/sessionManager.js';
 import { readFile, writeFile, fileExists, generateUniqueFilename } from '../utils/fileUtils.js';
@@ -74,19 +42,9 @@ function checkDependencies() {
 }
 
 // Set up Terminal Renderer for markdown
-// The ts-ignore is required since the marked-terminal types don't match exactly
-// what the marked library expects
+// Need to use ts-ignore since the types for marked-terminal are problematic
 //@ts-ignore
-const renderer = new TerminalRenderer();
-
-// Configure marked with all our options
-//@ts-ignore
-marked.setOptions({
-  //@ts-ignore
-  renderer: renderer,
-  gfm: true,
-  breaks: true
-});
+marked.setOptions({ renderer: new TerminalRenderer() });
 
 const program = new Command();
 
@@ -254,26 +212,18 @@ program
               // Get the current provider info
               const provider = await getProviderWithApiKey(options.provider);
               
-              // Format the choices to highlight the current default model
-              const formattedChoices = models.map(model => ({
-                name: model === provider.defaultModel ? 
-                  `${model} ${chalk.green('(current)')}` : 
-                  model,
-                value: model
-              }));
-              
               const answers = await inquirer.prompt([
                 {
                   type: 'list',
                   name: 'selectedModel',
                   message: `Select a default model for ${provider.name}:`,
-                  choices: formattedChoices,
+                  choices: models,
                   default: provider.defaultModel || models[0]
                 }
               ]);
               
               // Update the provider's default model
-              await setDefaultProvider(provider.name, answers.selectedModel);
+              await setDefaultProvider(provider.name);
               console.log(chalk.green(`✓ Default model for ${provider.name} set to: ${answers.selectedModel}`));
               return;
             } catch (error: any) {
@@ -410,12 +360,6 @@ program
 
         // Check if we should use the ink-based UI (enabled by default, can be disabled with --no-ink)
         const useInkUI = options.ink !== false && config.get('useInkUI') === true;
-        
-        // If we're going to save output to a file, register a global flag to prevent auto-exit
-        if (options.output !== undefined) {
-          // @ts-ignore - Create a flag to ensure we never auto-exit during file operations
-          process._llamb_file_output_pending = true;
-        }
 
         let answer = '';
 
@@ -443,28 +387,16 @@ program
             const unmount = renderStreamingResponse(
               question,
               streamingFunction,
-              async (fullResponse: string) => {
+              (fullResponse: string) => {
                 answer = fullResponse;
-                console.log(chalk.dim(`Debug: onComplete callback received content of length ${fullResponse ? fullResponse.length : 0}`));
-                // Make sure fullResponse is actually a string
-                if (typeof fullResponse !== 'string') {
-                  console.log(chalk.yellow(`Warning: Response is not a string! Type: ${typeof fullResponse}`));
-                  answer = String(fullResponse || '');
-                } else {
-                  answer = fullResponse;
-                }
-                
                 // Handle file output when complete
                 if (options.output !== undefined) {
                   try {
-                    // Make sure we use await since file handling is asynchronous!
-                    await handleFileOutput(answer, options.output, options.overwrite);
+                    handleFileOutput(answer, options.output, options.overwrite);
                   } catch (error: any) {
                     console.error(chalk.red(`Error saving response: ${error.message}`));
                   }
                 }
-                
-                // Don't exit immediately - allow UI to render properly
               },
               abortController,
               options.chat // Pass the chat mode flag
@@ -488,65 +420,18 @@ program
 
             process.on('SIGINT', sigintHandler);
 
-            // Wait for the streaming to complete and rendering to finish
+            // Wait for the streaming to complete before returning
             await new Promise<void>((resolve) => {
-              // Flags to track different event completion states
-              let renderComplete = false;
-              let fileComplete = false;
-              let contentReady = false;
-              
-              // Define the event handler functions separately so we can remove them later
-              const renderCompleteHandler = () => {
-                renderComplete = true;
-                console.log(chalk.dim('Render complete event received'));
-              };
-
-              // Custom event for file output complete
-              const fileCompleteHandler = () => {
-                console.log(chalk.dim('File output complete event received'));
-                fileComplete = true;
-              };
-              
-              // Custom event for content preparation complete
-              const contentReadyHandler = (eventData: any) => {
-                contentReady = true;
-                console.log(chalk.dim(`Content ready event received - content length: ${eventData?.length || 'unknown'}`));
-              };
-              
-              // Set up listeners for custom events
-              process.on('llamb_render_complete', renderCompleteHandler);
-              process.on('llamb_file_complete', fileCompleteHandler);
-              process.on('llamb_content_ready', contentReadyHandler);
-              
               const checkInterval = setInterval(() => {
-                // If output to file is requested, wait for all three events
-                if (options.output !== undefined) {
-                  if (renderComplete && fileComplete && contentReady) {
-                    console.log(chalk.dim('All operations complete: render, content, and file'));
-                    // Clean up all listeners and intervals
-                    clearInterval(checkInterval);
-                    process.removeListener('llamb_render_complete', renderCompleteHandler);
-                    process.removeListener('llamb_file_complete', fileCompleteHandler);
-                    process.removeListener('llamb_content_ready', contentReadyHandler);
-                    process.removeListener('SIGINT', sigintHandler);
-                    resolve();
-                  }
-                } else {
-                  // No file output, just wait for render complete
-                  if (renderComplete) {
-                    // Clean up all listeners and intervals
-                    clearInterval(checkInterval);
-                    process.removeListener('llamb_render_complete', renderCompleteHandler);
-                    process.removeListener('llamb_file_complete', fileCompleteHandler);
-                    process.removeListener('llamb_content_ready', contentReadyHandler);
-                    process.removeListener('SIGINT', sigintHandler);
-                    resolve();
-                  }
+                if (typeof answer !== 'undefined') {
+                  clearInterval(checkInterval);
+                  // Remove the SIGINT handler to avoid memory leaks
+                  process.removeListener('SIGINT', sigintHandler);
+                  resolve();
                 }
-              }, 500); // Check every 500ms to reduce terminal spam
+              }, 100);
             });
 
-            // Now it's safe to unmount and exit
             unmount();
             // Exit when done in non-chat mode
             if (!options.chat) {
@@ -571,16 +456,6 @@ program
               },
               color: 'yellow'
             }).start();
-            
-            // Keep spinner alive with a periodic update
-            const keepSpinnerAlive = setInterval(() => {
-              if (spinner.isSpinning) {
-                // Update text periodically to ensure animation continues
-                spinner.text = chalk.dim(`Thinking${'.'.repeat(Date.now() % 4)}...`);
-              } else {
-                clearInterval(keepSpinnerAlive);
-              }
-            }, 250);
 
             // Display the question once
             console.log(chalk.dim('Asking: ') + question);
@@ -614,10 +489,9 @@ program
               fileContent
             );
 
-            // Mark streaming as complete and clear the intervals
+            // Mark streaming as complete and clear the interval
             streamComplete = true;
             clearInterval(progressTimer);
-            clearInterval(keepSpinnerAlive);
 
             // Stop the spinner
             spinner.stop();
@@ -651,16 +525,6 @@ program
               },
               color: 'yellow'
             }).start();
-            
-            // Keep spinner alive with a periodic update
-            const keepSpinnerAlive = setInterval(() => {
-              if (spinner.isSpinning) {
-                // Update text periodically to ensure animation continues
-                spinner.text = chalk.dim(`Thinking${'.'.repeat(Date.now() % 4)}...`);
-              } else {
-                clearInterval(keepSpinnerAlive);
-              }
-            }, 250);
 
             // Display the question once
             console.log(chalk.dim('Asking: ') + question);
@@ -689,7 +553,6 @@ program
             const handleStreamingChunk = (chunk: string) => {
               // Stop the spinner on first chunk
               if (isFirstChunk) {
-                clearInterval(keepSpinnerAlive); // Clear the keep-alive interval before stopping spinner
                 spinner.stop();
                 isFirstChunk = false;
               }
@@ -751,21 +614,10 @@ program
             color: 'yellow'
           }).start();
           
-          // Keep spinner alive with a periodic update
-          const keepSpinnerAlive = setInterval(() => {
-            if (spinner.isSpinning) {
-              // Update text periodically to ensure animation continues
-              spinner.text = chalk.dim(`Thinking${'.'.repeat(Date.now() % 4)}...`);
-            } else {
-              clearInterval(keepSpinnerAlive);
-            }
-          }, 250);
-          
           // Call without streaming
           answer = await askQuestion(question, options.model, options.provider, options.baseUrl, options.history, fileContent);
           
-          // Stop the spinner and clear the interval
-          clearInterval(keepSpinnerAlive);
+          // Stop the spinner
           spinner.stop();
           
           // Make sure answer is a string before parsing markdown
@@ -791,7 +643,6 @@ program
 
           // Handle file output
           if (options.output !== undefined) {
-            console.log(chalk.dim(`Debug: Non-streaming mode has answer of length ${answer ? answer.length : 0}`));
             try {
               await handleFileOutput(answer, options.output, options.overwrite);
             } catch (error: any) {
@@ -1098,6 +949,14 @@ program
           console.log(chalk.green(`\n✓ Completed model fetch attempt\n`));
         } catch (error: any) {
           console.warn(chalk.red(`❌ Error fetching models: ${error.message}`));
+        }
+// REMOVE ALL THIS DUPLICATED CODE - using getModels() instead
+// The problem is that we had duplicated model fetch logic - this function 
+// is now completely removed and replaced by the enhanced getModels function
+// which handles all API formats consistently
+        } catch (error: any) {
+          console.warn(chalk.yellow('Could not fetch models. Using manual input instead.'));
+          console.warn(chalk.dim(error.message));
         }
         
         // If we have models, let the user select; otherwise, allow manual input
@@ -1597,274 +1456,55 @@ if (!process.argv.slice(2).length) {
 }
 
 /**
- * Handle file output based on user preferences with prompts
+ * Handle file output based on user preferences
  */
 async function handleFileOutput(content: string, outputPath: string | true, overwrite: boolean = false): Promise<void> {
-  // Debug content received with more details
-  console.log(chalk.dim(`Debug: handleFileOutput received content of length ${content ? content.length : 0} characters`));
-  console.log(chalk.dim(`Debug: Content type: ${typeof content}, First 50 chars: ${content ? content.substring(0, 50).replace(/\n/g, '\\n') + '...' : 'empty'}`));
-  
-  // Format and clean the content for file output with automatic code block detection
-  // The formatOutputContent function will detect code blocks and their language
-  const formatResult = formatOutputContent(content, { isFileOutput: true });
-  const cleanedContent = formatResult.content;
-  const detectedLanguage = formatResult.detectedLanguage;
-  const isPureCodeBlock = formatResult.isPureCodeBlock;
-  
-  // Log the detected language and content type
-  if (detectedLanguage) {
-    if (isPureCodeBlock) {
-      console.log(chalk.dim(`Detected pure code block with language: ${detectedLanguage}`));
-    } else {
-      console.log(chalk.dim(`Detected code block with language: ${detectedLanguage}, but it's not the only content`));
+  let finalPath = typeof outputPath === 'string' ? outputPath : '';
+
+  // If no path is specified (just -o flag), prompt for a filename
+  if (!finalPath) {
+    const answer = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'filename',
+        message: 'Enter filename to save response:',
+        default: `llamb-response-${Date.now()}.txt`,
+        validate: (input: string) => input.length > 0 ? true : 'Filename cannot be empty'
+      }
+    ]);
+    finalPath = answer.filename;
+  }
+
+  // Check if file exists and handle appropriately
+  if (fileExists(finalPath) && !overwrite) {
+    const answer = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'action',
+        message: `File '${finalPath}' already exists. What would you like to do?`,
+        choices: [
+          { name: 'Overwrite existing file', value: 'overwrite' },
+          { name: 'Generate a new filename', value: 'new' },
+          { name: 'Cancel', value: 'cancel' }
+        ]
+      }
+    ]);
+
+    if (answer.action === 'cancel') {
+      console.log(chalk.yellow('File save cancelled.'));
+      return;
+    } else if (answer.action === 'new') {
+      // Generate a unique filename
+      finalPath = generateUniqueFilename(finalPath);
     }
   }
+
+  // Write the file
   try {
-    // Prevent auto-close using our new global system
-    preventAutoClose.prevent('file output');
-    
-    // Set up special SIGINT handling just for this operation
-    const oldSIGINTListeners = process.listeners('SIGINT');
-    process.removeAllListeners('SIGINT');
-    
-    // Add our own SIGINT handler that only shows a message
-    process.on('SIGINT', () => {
-      console.log(chalk.yellow('\nPlease wait for file operations to complete...'));
-    });
-    
-    let finalPath = typeof outputPath === 'string' ? outputPath : '';
-
-    // If no path is specified (just -o flag), prompt for a filename
-    if (!finalPath) {
-      let promptResolved = false;
-      let timeoutId: NodeJS.Timeout | null = null;
-      
-      // Generate default filename with appropriate extension based on content
-      let defaultExtension = 'txt';
-      
-      // Only use a different extension if this is a pure code block
-      if (detectedLanguage && isPureCodeBlock) {
-        // Import the function directly to avoid circular dependencies
-        const { getExtensionForLanguage } = await import('../utils/fileUtils.js');
-        defaultExtension = getExtensionForLanguage(detectedLanguage);
-        console.log(chalk.dim(`Using detected language '${detectedLanguage}' for file extension: .${defaultExtension}`));
-      } else if (detectedLanguage && !isPureCodeBlock) {
-        console.log(chalk.dim(`Content contains code but also other text, defaulting to .txt extension`));
-      }
-      
-      const defaultFilename = `llamb-response-${Date.now()}.${defaultExtension}`;
-      
-      try {
-        // Set up a promise that will automatically resolve to the default filename after 10 seconds
-        const timeoutPromise = new Promise<{filename: string}>((resolve) => {
-          timeoutId = setTimeout(() => {
-            if (!promptResolved) {
-              console.log(chalk.yellow(`\nFilename prompt timed out, using default: ${defaultFilename}`));
-              resolve({filename: defaultFilename});
-            }
-          }, 10000); // 10 seconds timeout for file prompts
-        });
-        
-        // Set up the actual prompt
-        const promptPromise = inquirer.prompt([
-          {
-            type: 'input',
-            name: 'filename',
-            message: 'Enter filename to save response:',
-            default: defaultFilename,
-            validate: (input: string) => input.length > 0 ? true : 'Filename cannot be empty'
-          }
-        ]);
-        
-        // Race between the user response and the timeout
-        const answer = await Promise.race([promptPromise, timeoutPromise]);
-        promptResolved = true;
-        
-        // Clear the timeout if it's still running
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-        
-        finalPath = answer.filename;
-        
-        // Check if the user provided a filename without extension
-        if (finalPath && !path.extname(finalPath)) {
-          // Only apply a language-specific extension if it's a pure code block
-          if (detectedLanguage && isPureCodeBlock) {
-            const { getExtensionForLanguage } = await import('../utils/fileUtils.js');
-            const suggestedExt = getExtensionForLanguage(detectedLanguage);
-            // Add the appropriate extension
-            finalPath = `${finalPath}.${suggestedExt}`;
-            console.log(chalk.cyan(`Added .${suggestedExt} extension based on detected language: ${finalPath}`));
-          } else {
-            // For mixed content or no detected language, default to .txt
-            finalPath = `${finalPath}.txt`;
-            console.log(chalk.cyan(`Added .txt extension to filename: ${finalPath}`));
-          }
-        }
-        
-        console.log(chalk.cyan(`Using filename: ${finalPath}`));
-      } catch (err) {
-        // Clear the timeout if it was interrupted
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
-        
-        // If prompt fails, fall back to a default filename
-        finalPath = defaultFilename;
-        console.log(chalk.yellow(`Prompt interrupted, using default filename: ${finalPath}`));
-      }
-    } else if (finalPath && typeof finalPath === 'string' && !path.extname(finalPath)) {
-      // If the user specified a filename without extension
-      if (detectedLanguage && isPureCodeBlock) {
-        // Only use language extension for pure code blocks
-        const { getExtensionForLanguage } = await import('../utils/fileUtils.js');
-        const suggestedExt = getExtensionForLanguage(detectedLanguage);
-        
-        // Create a new filename with the detected extension
-        const newPath = `${finalPath}.${suggestedExt}`;
-        console.log(chalk.cyan(`Added .${suggestedExt} extension based on detected language: ${newPath}`));
-        finalPath = newPath;
-      } else {
-        // For mixed content or no detected language, default to .txt
-        const newPath = `${finalPath}.txt`;
-        console.log(chalk.cyan(`Added .txt extension to filename: ${newPath}`));
-        finalPath = newPath;
-      }
-    }
-
-    
-    // Handle existing files with prompt
-    let shouldWrite = true;
-    
-    if (fileExists(finalPath) && !overwrite) {
-      // For the file exists prompt, give the user a chance to respond
-      // but don't wait infinitely - set up a timer to auto-select a reasonable default
-      let promptResolved = false;
-      let timeoutId: NodeJS.Timeout | null = null;
-      
-      try {
-        // Set up a promise that will automatically resolve to "new" after 10 seconds
-        const timeoutPromise = new Promise<{action: string}>((resolve) => {
-          timeoutId = setTimeout(() => {
-            if (!promptResolved) {
-              console.log(chalk.yellow('\nPrompt timed out, automatically choosing "Generate a new filename"'));
-              resolve({action: 'new'});
-            }
-          }, 10000); // 10 seconds timeout for file prompts
-        });
-        
-        // Set up the actual prompt
-        const promptPromise = inquirer.prompt([
-          {
-            type: 'list',
-            name: 'action',
-            message: `File '${finalPath}' already exists. What would you like to do?`,
-            choices: [
-              { name: 'Overwrite existing file', value: 'overwrite' },
-              { name: 'Generate a new filename', value: 'new' },
-              { name: 'Cancel', value: 'cancel' }
-            ]
-          }
-        ]);
-        
-        // Race between the user response and the timeout
-        const answer = await Promise.race([promptPromise, timeoutPromise]);
-        promptResolved = true;
-        
-        // Clear the timeout if it's still running
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-
-        if (answer.action === 'cancel') {
-          console.log(chalk.yellow('File save cancelled.'));
-          shouldWrite = false;
-        } else if (answer.action === 'new') {
-          // Generate a unique filename
-          finalPath = generateUniqueFilename(finalPath);
-          console.log(chalk.cyan(`Using new filename: ${finalPath}`));
-        } else {
-          // Overwrite case
-          console.log(chalk.cyan(`Overwriting existing file: ${finalPath}`));
-        }
-      } catch (err) {
-        // Clear the timeout if it was interrupted
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
-        
-        // If prompt fails for any reason, automatically use a new filename
-        const newPath = generateUniqueFilename(finalPath);
-        console.log(chalk.yellow(`Prompt interrupted, using new filename: ${newPath}`));
-        finalPath = newPath;
-      }
-    }
-
-    // Write the file if we should
-    if (shouldWrite) {
-      try {
-        // Debug the content to make sure it's not empty
-        console.log(chalk.dim(`Content length: ${cleanedContent.length} characters`));
-        if (cleanedContent.length === 0) {
-          console.log(chalk.yellow('Warning: Content is empty!'));
-          // For debugging
-          console.log(chalk.dim(`Original content length: ${content.length} characters`));
-        }
-        
-        // Make sure we don't write empty content
-        // If the cleaned content is empty but the original had content, use the original
-        const finalContent = cleanedContent.length > 0 ? cleanedContent : content;
-        console.log(chalk.dim(`Debug: Final content length: ${finalContent.length}, Using: ${cleanedContent.length > 0 ? 'cleaned' : 'original'}`));
-        
-        // Write the file with the content
-        if (finalContent.length === 0) {
-          console.log(chalk.red(`Error: Cannot write empty content to file.`));
-          throw new Error('Content is empty, cannot write file');
-        }
-        writeFile(finalPath, finalContent, true);
-        console.log(chalk.green(`✓ Response saved to: ${finalPath} (${finalContent.length} characters)`));
-        
-        // Signal that file output is complete with file info
-        // @ts-ignore - Using custom event
-        process.emit('llamb_file_complete', { path: finalPath, size: finalContent.length });
-      } catch (error: any) {
-        console.error(chalk.red(`Error saving file: ${error.message}`));
-        
-        // Signal that file output failed but the operation is complete
-        // @ts-ignore - Using custom event
-        process.emit('llamb_file_complete', { error: error.message });
-        
-        // Emit content ready event in case it wasn't emitted elsewhere
-        // @ts-ignore - Using custom event
-        process.emit('llamb_content_ready', { error: 'File operation failed' });
-      }
-    }
-    
-    // Restore original SIGINT handlers
-    process.removeAllListeners('SIGINT');
-    oldSIGINTListeners.forEach(listener => {
-      process.on('SIGINT', listener);
-    });
-    
-    // Final exit
-    console.log(chalk.dim('File operation complete.'));
-    
-    // Release the auto-close prevention
-    preventAutoClose.release();
-    
-    // Exit now that everything is complete
-    process.exit(0);
+    writeFile(finalPath, content, true);
+    console.log(chalk.green(`✓ Response saved to: ${finalPath}`));
   } catch (error: any) {
-    // Catch any other errors
-    console.error(chalk.red(`Error saving response: ${error.message}`));
-    
-    // Release the auto-close prevention even on error
-    preventAutoClose.release();
-    
-    process.exit(1);
+    console.error(chalk.red(`Error saving file: ${error.message}`));
   }
 }
 
@@ -2071,78 +1711,12 @@ async function startContinuousConversation(
 
 /**
  * Helper function to exit after a delay
- * This gives the event loop time to finish any ongoing tasks and allows
- * the user to see the content before exiting
+ * This gives the event loop time to finish any ongoing tasks
  */
 function exitWhenDone(code: number = 0) {
-  // First, log an empty line to create some separation
-  console.log('');
-  
-  // Add a small visual indicator that we're done
-  if (code === 0) {
-    console.log(chalk.green('✅ Response complete'));
-  }
-  
-  // Set up a SIGINT handler so we can gracefully exit
-  const sigintHandler = () => {
-    // Force exit on second SIGINT (Ctrl+C)
-    console.log(chalk.yellow('\nForce exiting on user request (Ctrl+C)'));
-    process.exit(130); // Standard exit code for SIGINT
-  };
-  
-  // Register SIGINT handler temporarily
-  process.once('SIGINT', sigintHandler);
-  
-  // Check if auto-close is globally prevented by any feature
-  if (preventAutoClose.isPrevented()) {
-    console.log(chalk.dim('Auto-close prevented, waiting for interactive operations to complete...'));
-    return;
-  }
-  
-  // Legacy check for file operations (backwards compatibility)
-  // @ts-ignore - accessing custom properties for file handling check
-  if (process._llamb_file_output_pending || process._llamb_handling_file) {
-    console.log(chalk.dim('File operation pending, waiting to complete...'));
-    return;
-  }
-  
-  // Check if inquirer is active (user is being prompted)
-  // @ts-ignore - accessing private property for safety check
-  const inquirerActive = inquirer.prompts && inquirer.prompts.length > 0;
-  
-  if (inquirerActive) {
-    // Don't exit if there's an active prompt - let the user complete their input
-    console.log(chalk.dim('Waiting for user input before exit...'));
-    return;
-  }
-  
-  // Wait a short time for the user to read the response before exiting
   setTimeout(() => {
-    // Remove our SIGINT handler since we're about to exit
-    process.removeListener('SIGINT', sigintHandler);
-    
-    // Check again if auto-close became prevented
-    if (preventAutoClose.isPrevented()) {
-      console.log(chalk.dim('Interactive operation started, canceling exit...'));
-      return;
-    }
-    
-    // Legacy check for file operations (backwards compatibility)
-    // @ts-ignore - accessing custom properties for file handling check
-    if (process._llamb_handling_file || process._llamb_file_output_pending) {
-      console.log(chalk.dim('File operation started, canceling exit...'));
-      return;
-    }
-    
-    // Check one more time if inquirer became active during the timeout
-    // @ts-ignore - accessing private property for safety check
-    if (inquirer.prompts && inquirer.prompts.length > 0) {
-      console.log(chalk.dim('User prompt detected, canceling exit...'));
-      return;
-    }
-    
     process.exit(code);
-  }, 500); // 0.5 second delay is enough to ensure output is flushed
+  }, 50);
 }
 
 /**
