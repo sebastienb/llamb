@@ -6,7 +6,7 @@ import chalk from 'chalk';
 
 interface StreamingResponseProps {
   question: string;
-  responseStream: (onChunk: (chunk: string) => void) => Promise<string>;
+  responseStream: (onChunk: (chunk: string) => void) => Promise<string | { cancelled: boolean, partialResponse: string }>;
   onComplete: (fullResponse: string) => void;
   abortController?: AbortController;
   isChatMode?: boolean; // Flag for continuous conversation mode
@@ -36,21 +36,65 @@ const StreamingResponse: FC<StreamingResponseProps> = ({
         abortController.abort();
       }
 
-      // Show cancelled message but don't force exit
+      // Show cancelled message
       console.log('\n');
       console.log('\x1b[31mRequest cancelled by user\x1b[0m'); // Red text
-      // Don't call process.exit - allow app to continue
+      
+      // Don't exit immediately - let the parent handle cleanup
+      // This will be handled by the parent component's onComplete callback
     }
   });
 
+  // Track if we've already processed a response to prevent duplicates
+  const hasProcessedResponse = React.useRef(false);
+  
   useEffect(() => {
     const fetchResponse = async () => {
       try {
-        const fullResponse = await responseStream((chunk) => {
+        // Skip processing if we've already processed a response
+        if (hasProcessedResponse.current) {
+          return;
+        }
+        
+        const response = await responseStream((chunk) => {
           if (!isCancelled) {
             setResponse(prev => prev + chunk);
           }
         });
+        
+        // Mark that we've now processed a response
+        hasProcessedResponse.current = true;
+
+        // Check if the response is a cancellation object
+        if (response && typeof response === 'object' && 'cancelled' in response) {
+          // Handle cancellation - this is a cancelled response
+          console.log(chalk.dim(`Debug: StreamingResponse received cancelled response`));
+          
+          // If not already marked as cancelled, set it
+          if (!isCancelled) {
+            setIsCancelled(true);
+            setIsLoading(false);
+          }
+          
+          // Call onComplete with the partial response
+          // This ensures proper cleanup even after cancellation
+          const partialResponse = response.partialResponse || '';
+          const safeResponse = typeof partialResponse === 'string' ? partialResponse : String(partialResponse || '');
+          
+          // Emit content ready event for cancellation
+          (process as any).emit('llamb_content_ready', { cancelled: true, length: safeResponse.length });
+          
+          // Allow time for rendering to complete before cleanup
+          setTimeout(() => {
+            onComplete(safeResponse);
+            // Let the parent handle cleanup and exit
+          }, 500);
+          
+          return;
+        }
+
+        // Handle regular (non-cancelled) response
+        const fullResponse = response; // Regular string response
 
         if (!isCancelled) {
           setIsComplete(true);
@@ -101,15 +145,29 @@ const StreamingResponse: FC<StreamingResponseProps> = ({
       }
     };
 
-    if (!isCancelled) {
+    // Only fetch if not cancelled and we haven't processed a response yet
+    if (!isCancelled && !hasProcessedResponse.current) {
       fetchResponse();
+    } else {
+      // If already cancelled (e.g., user pressed ESC), ensure loading is stopped
+      setIsLoading(false);
+      
+      // Make sure to call onComplete with partial response to ensure proper cleanup
+      // Only do this if we haven't already processed a response
+      if (!hasProcessedResponse.current) {
+        hasProcessedResponse.current = true;
+        setTimeout(() => {
+          onComplete(response || '');
+        }, 500);
+      }
     }
 
     // Cleanup function to handle unmounting
     return () => {
-      // No cleanup needed at this time
+      // Mark the response as processed on cleanup to prevent further processing
+      hasProcessedResponse.current = true;
     };
-  }, [responseStream, onComplete, isCancelled]);
+  }, [responseStream, onComplete, isCancelled, response]);
 
   // Parse markdown to text for display
   const displayResponse = response ? marked(response).toString() : '';
@@ -124,12 +182,15 @@ const StreamingResponse: FC<StreamingResponseProps> = ({
     }
   }, [isLoading, response, isComplete, isCancelled]);
 
-  // Use effect to notify when rendering is complete
+  // Use effect to notify when rendering is complete - use a ref to track if we've already emitted
+  const hasEmittedRenderComplete = React.useRef(false);
+  
   useEffect(() => {
-    if (isComplete && !isLoading && response) {
+    if (isComplete && !isLoading && response && !hasEmittedRenderComplete.current) {
       // Notify that rendering is complete using a custom event
       // instead of writing directly to stdout
       (process as any).emit('llamb_render_complete');
+      hasEmittedRenderComplete.current = true;
     }
   }, [isComplete, isLoading, response]);
 
@@ -181,7 +242,7 @@ const StreamingResponse: FC<StreamingResponseProps> = ({
 // Helper function to render the component
 export const renderStreamingResponse = (
   question: string,
-  responseStream: (onChunk: (chunk: string) => void) => Promise<string>,
+  responseStream: (onChunk: (chunk: string) => void) => Promise<string | { cancelled: boolean, partialResponse: string }>,
   onComplete: (fullResponse: string) => void,
   abortController?: AbortController,
   isChatMode: boolean = false // Default to non-chat mode

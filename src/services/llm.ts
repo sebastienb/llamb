@@ -347,12 +347,33 @@ export async function askQuestion(
   useHistory: boolean = true,
   fileContent?: string
 ): Promise<string> {
-  const fullResponse = await askQuestionWithStreaming(question, null, modelName, providerName, customBaseUrl, useHistory, fileContent);
-  return fullResponse;
+  const response = await askQuestionWithStreaming(question, null, modelName, providerName, customBaseUrl, useHistory, fileContent);
+  
+  // Handle the case where we get a cancellation object
+  if (typeof response === 'object' && 'cancelled' in response) {
+    return response.partialResponse || '';
+  }
+  
+  return response;
+}
+
+// Add static property to function
+interface AskQuestionWithStreamingFunction {
+  (
+    question: string,
+    streamCallback: StreamCallbackFn | null,
+    modelName?: string,
+    providerName?: string,
+    customBaseUrl?: string,
+    useHistory?: boolean,
+    fileContent?: string,
+    abortController?: AbortController
+  ): Promise<string | { cancelled: boolean, partialResponse: string }>;
+  hasShownModelInfo?: boolean;
 }
 
 // Streaming version that can handle both streaming and non-streaming
-export async function askQuestionWithStreaming(
+export const askQuestionWithStreaming: AskQuestionWithStreamingFunction = async function(
   question: string,
   streamCallback: StreamCallbackFn | null = null,
   modelName?: string,
@@ -361,7 +382,7 @@ export async function askQuestionWithStreaming(
   useHistory: boolean = true,
   fileContent?: string,
   abortController?: AbortController
-): Promise<string> {
+): Promise<string | { cancelled: boolean, partialResponse: string }> {
   const provider = await getProviderWithApiKey(providerName);
   const model = modelName || provider.defaultModel;
 
@@ -376,7 +397,10 @@ export async function askQuestionWithStreaming(
   }
 
   try {
-    console.log(`🤖 Using model: ${model} from provider: ${provider.name}`);
+    // Log for non-streaming only - streaming has its own log
+    if (!streamCallback) {
+      console.log(`🤖 Using model: ${model} from provider: ${provider.name}`);
+    }
 
     const openai = new OpenAI({
       apiKey: provider.apiKey || 'dummy-key',
@@ -415,7 +439,16 @@ export async function askQuestionWithStreaming(
       // Create a local AbortController if none was provided
       const localAbortController = abortController || new AbortController();
       
-      // Create a flag to track if we've gotten any response
+      // Increase the max listeners to avoid warnings
+      if (localAbortController.signal && typeof (localAbortController.signal as any).setMaxListeners === 'function') {
+        (localAbortController.signal as any).setMaxListeners(50);
+      }
+      
+      // Create a flag to track model info and responses
+      // Use a static variable that persists across function calls to prevent duplicate model info
+      if (typeof askQuestionWithStreaming.hasShownModelInfo === 'undefined') {
+        askQuestionWithStreaming.hasShownModelInfo = false;
+      }
       let hasReceivedResponse = false;
       let providerCheckStarted = false;
       let providerCheckComplete = false;
@@ -476,15 +509,21 @@ export async function askQuestionWithStreaming(
           originalConsoleError.call(console, err, ...args);
         };
         
-        // Create options object with the abort signal
-        const requestOptions = {
+        // Don't create a new AbortController if one was provided to avoid memory leaks
+        const requestOptions = localAbortController ? {
           signal: localAbortController.signal
-        };
+        } : {};
 
         // Set up to collect the streaming reasoning content separately
         let streamedReasoningContent = '';
         let isShowingReasoning = false;
         let previousWasReasoning = false;
+        
+        // Log once at the start instead of for every chunk - but only if we haven't shown model info in this session
+        if (!askQuestionWithStreaming.hasShownModelInfo) {
+          console.log(`🤖 Using model: ${model} from provider: ${provider.name}`);
+          askQuestionWithStreaming.hasShownModelInfo = true;
+        }
         
         const stream = await openai.chat.completions.create({
           model,
@@ -572,9 +611,11 @@ export async function askQuestionWithStreaming(
           console.error = originalConsoleError;
         }
         
-        // If the error is due to abort, just return the response so far
+        // If the error is due to abort, add cancelled flag to the response
         if (error.name === 'AbortError' || localAbortController.signal.aborted) {
-          return fullResponse;
+          // Add a special marker to indicate the response was cancelled
+          // This will be used by StreamingResponse to properly handle cancellation
+          return { cancelled: true, partialResponse: fullResponse };
         }
         
         // Check if this is a network-related error indicating the provider is offline

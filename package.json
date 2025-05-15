@@ -14,7 +14,11 @@
     "start": "node dist/cli/index.js",
     "dev": "ts-node --esm src/cli/index.ts",
     "update": "npm run build && npm link",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node run-all-tests.js",
+    "test:cli": "node src/test/cli-test-runner.js",
+    "test:comprehensive": "node src/test/simple-runner.js",
+    "test:interact": "node src/test/interaction-tests.js",
+    "test:llm": "node src/test/llm-interaction-tests.js",
     "install-man": "mkdir -p /usr/local/share/man/man1 && cp man/man1/llamb.1 /usr/local/share/man/man1/ && mandb",
     "test-man": "./scripts/test-man.sh"
   },

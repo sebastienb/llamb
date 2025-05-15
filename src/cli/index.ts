@@ -444,6 +444,12 @@ program
               question,
               streamingFunction,
               async (fullResponse: string) => {
+                // Only process this callback once
+                if (answer !== '') {
+                  console.log(chalk.dim('Duplicate onComplete callback received, ignoring'));
+                  return;
+                }
+                
                 answer = fullResponse;
                 console.log(chalk.dim(`Debug: onComplete callback received content of length ${fullResponse ? fullResponse.length : 0}`));
                 // Make sure fullResponse is actually a string
@@ -482,7 +488,7 @@ program
                 throw new Error('User force closed');
               } else {
                 // In non-chat mode, exit when done
-                exitWhenDone()
+                exitWhenDone(0);
               }
             };
 
@@ -604,7 +610,7 @@ program
             }, streamInterval);
 
             // Set up the callback and ask the question
-            answer = await askQuestionWithStreaming(
+            const response1 = await askQuestionWithStreaming(
               question,
               handleStreamingChunk,
               options.model,
@@ -613,6 +619,11 @@ program
               options.history,
               fileContent
             );
+            
+            // Handle the case where we get a cancellation object
+            answer = typeof response1 === 'object' && 'cancelled' in response1
+              ? response1.partialResponse || ''
+              : response1;
 
             // Mark streaming as complete and clear the intervals
             streamComplete = true;
@@ -720,7 +731,7 @@ program
             };
 
             // Set up the callback and ask the question
-            answer = await askQuestionWithStreaming(
+            const response2 = await askQuestionWithStreaming(
               question,
               handleStreamingChunk,
               options.model,
@@ -729,6 +740,11 @@ program
               options.history,
               fileContent
             );
+            
+            // Handle the case where we get a cancellation object
+            answer = typeof response2 === 'object' && 'cancelled' in response2
+              ? response2.partialResponse || ''
+              : response2;
           }
 
           // Handle file output
@@ -1931,7 +1947,7 @@ async function handleQuestion(question: string, options: any, fileContent?: stri
     const shouldStream = options.stream !== false;
 
     // In continuous mode, we'll use the simpler streaming option
-    const answer = await askQuestionWithStreaming(
+    const response = await askQuestionWithStreaming(
       question,
       (chunk: string) => {
         // Simple handling - just print the chunk directly
@@ -1943,6 +1959,16 @@ async function handleQuestion(question: string, options: any, fileContent?: stri
       options.history,
       fileContent
     );
+
+    // Handle the case where we get a cancellation object
+    const answer = typeof response === 'object' && 'cancelled' in response
+      ? response.partialResponse || ''
+      : response;
+
+    // If it was cancelled, show a message
+    if (typeof response === 'object' && 'cancelled' in response) {
+      console.log(chalk.red('\nRequest cancelled by user'));
+    }
 
     console.log('\n');
 
