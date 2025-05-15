@@ -26,3 +26,7 @@ Added continuous conversation mode with the following features:
 ## v2.0.0
 Added React-based CLI UI, conversation mode, progress-only mode, and live streaming. Improved session handling, file I/O, and first run provider setup.
 
+
+## v2.1.0
+Adds prompt storage support and improves the UX
+
