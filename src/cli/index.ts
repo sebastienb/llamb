@@ -15,9 +15,11 @@ import { marked } from 'marked';
 import TerminalRenderer from 'marked-terminal';
 import hljs from 'highlight.js';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
 // Import inquirer directly now that we have polyfills
 import inquirer from 'inquirer';
-import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider, getProviderWithApiKey, deleteProvider, formatOutputContent } from '../services/llm.js';
+import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider, getProviderWithApiKey, deleteProvider, formatOutputContent, checkProviderStatus, getModelCount } from '../services/llm.js';
 
 // Global auto-close prevention system
 // This allows any feature to prevent the app from closing while user interaction is needed
@@ -1362,39 +1364,129 @@ program
         return;
       }
 
-      console.log(chalk.bold('\nConfigured Providers:'));
+      // Show a spinner while we collect data
+      const spinner = ora({
+        text: chalk.dim('Checking providers...'),
+        spinner: {
+          frames: ['🐑', '🦙'],
+          interval: 400
+        },
+        color: 'yellow'
+      }).start();
       
-      // Table headers
-      console.log(chalk.dim('┌─────────────────────┬─────────────────────┬─────────────────┬────────────────┐'));
-      console.log(chalk.dim('│ ') + chalk.bold('Name'.padEnd(20)) + chalk.dim(' │ ') + 
-                  chalk.bold('Default Model'.padEnd(20)) + chalk.dim(' │ ') + 
-                  chalk.bold('Auth Required'.padEnd(15)) + chalk.dim(' │ ') + 
-                  chalk.bold('API Key'.padEnd(15)) + chalk.dim(' │'));
-      console.log(chalk.dim('├─────────────────────┼─────────────────────┼─────────────────┼────────────────┤'));
+      // Get terminal width
+      const termWidth = process.stdout.columns || 80;
       
-      // Table rows
-      providers.forEach(async (provider) => {
-        // Check if there's an API key stored
-        const providerWithKey = await getProviderWithApiKey(provider.name);
-        const hasApiKey = provider.noAuth ? 'N/A' : (providerWithKey.apiKey ? '✓ Set' : '✗ Missing');
-        console.log(chalk.dim('│ ') + provider.name.padEnd(20) + chalk.dim(' │ ') + 
-                    chalk.dim(provider.defaultModel.padEnd(20)) + chalk.dim(' │ ') + 
-                    chalk.dim((provider.noAuth ? 'No' : 'Yes').padEnd(15)) + chalk.dim(' │ ') + 
-                    chalk.dim(hasApiKey.padEnd(15)) + chalk.dim(' │'));
-      });
+      // Adjust column widths based on terminal size
+      const totalWidth = Math.min(termWidth - 4, 120); // Cap at reasonable max width
       
-      console.log(chalk.dim('└─────────────────────┴─────────────────────┴─────────────────┴────────────────┘'));
+      // Calculate percentages of total width for each column
+      const nameWidth = Math.floor(totalWidth * 0.45); // 45% for name+URL
+      const modelWidth = Math.floor(totalWidth * 0.25); // 25% for model
+      const modelsWidth = Math.floor(totalWidth * 0.10); // 10% for models count
+      const statusWidth = Math.floor(totalWidth * 0.15); // 15% for status
       
-      // Show default provider
+      // Get the default provider name
       const defaultProviderName = await getDefaultProvider();
-      console.log(chalk.cyan(`\nDefault provider: ${defaultProviderName}`));
       
-      // Usage information
-      console.log('\n' + chalk.cyan('Usage:'));
+      // Update spinner text
+      spinner.text = chalk.dim('Collecting provider data...');
+      
+      // Collect provider data in parallel
+      const providerData = await Promise.all(providers.map(async (provider) => {
+        // Get model count
+        const modelCount = await getModelCount(provider.name);
+        const modelCountDisplay = modelCount !== null ? modelCount.toString() : '-';
+        
+        // Check provider status
+        const isOnline = await checkProviderStatus(provider.name);
+        const statusDisplay = isOnline ? chalk.green('✓ Online') : chalk.red('✗ Offline');
+        
+        // Is this the default provider?
+        const isDefault = provider.name === defaultProviderName;
+        
+        return {
+          name: provider.name,
+          displayName: provider.name + (isDefault ? ' ' + chalk.dim('(default)') : ''),
+          model: provider.defaultModel,
+          url: provider.baseUrl,
+          models: modelCountDisplay,
+          status: statusDisplay,
+          isDefault
+        };
+      }));
+      
+      // Function to format text with ellipsis if too long
+      function formatText(text: string, maxLength: number): string {
+        if (!text) return '';
+        
+        // For URLs, try to preserve the domain part
+        if (text.startsWith('http')) {
+          // If text is a URL and too long for the column
+          if (text.length > maxLength - 3) {
+            try {
+              // Parse the URL to extract meaningful parts
+              const url = new URL(text);
+              // Extract hostname and path
+              const origin = url.origin; // e.g., https://api.openai.com
+              const path = url.pathname; // e.g., /v1
+              
+              // If even the origin is too long, truncate it
+              if (origin.length > maxLength - 3) {
+                return origin.slice(0, maxLength - 3) + '...';
+              }
+              
+              // If we have some path but the whole URL is too long
+              if (path && path !== '/') {
+                // Show origin + start of path with ellipsis
+                const availableSpace = maxLength - origin.length - 3;
+                if (availableSpace > 1) {
+                  return origin + path.slice(0, availableSpace) + '...';
+                } else {
+                  return origin + '...';
+                }
+              }
+              
+              // Otherwise just return the origin (base URL without path)
+              return origin;
+            } catch (e) {
+              // If URL parsing fails, fall back to simple truncation
+              return text.slice(0, maxLength - 3) + '...';
+            }
+          }
+        }
+        
+        // Default case for non-URLs or URLs that fit
+        return text.length > maxLength - 3 
+          ? text.slice(0, maxLength - 3) + '...'
+          : text;
+      }
+      
+      // Stop the spinner completely
+      spinner.stop();
+      
+      // Just use console.dir to print provider info directly to avoid formatting issues
+      console.log(chalk.bold('\nProvider Information:\n'));
+      
+      // Display the providers one by one with all their details
+      for (const data of providerData) {
+        const defaultLabel = data.isDefault ? chalk.yellow(' (default)') : '';
+        console.log(chalk.cyan.bold(`Provider: ${data.name}${defaultLabel}`));
+        console.log(`URL:      ${data.url}`);
+        console.log(`Model:    ${data.model}`);
+        console.log(`Models:   ${data.models}`);
+        console.log(`Status:   ${data.status}`);
+        console.log(''); // Empty line between providers
+      }
+      
+      // Show usage information
+      console.log(chalk.cyan('\nUsage:'));
       console.log(`  ${chalk.bold('llamb -p <provider-name>')}          Use a specific provider`);
       console.log(`  ${chalk.bold('llamb provider:edit <provider>')}    Edit a provider`);
       console.log(`  ${chalk.bold('llamb provider:apikey')}             Update API key`);
       console.log(`  ${chalk.bold('llamb provider:default')}            Set default provider\n`);
+      
+      // We don't need this anymore as the empty providers case is handled at the beginning
     } catch (error: any) {
       console.error(chalk.red('Error listing providers:'), error.message);
     }

@@ -44,25 +44,19 @@ export async function listPrompts() {
       return;
     }
     
-    console.log(chalk.bold('\nAvailable Prompts:'));
+    console.log(chalk.bold('\nAvailable Prompts:\n'));
     
-    // Table headers
-    console.log(chalk.dim('┌─────────────────────┬─────────────────────┬─────────────────────┐'));
-    console.log(chalk.dim('│ ') + chalk.bold('Name'.padEnd(20)) + chalk.dim(' │ ') + 
-                chalk.bold('Created'.padEnd(20)) + chalk.dim(' │ ') + 
-                chalk.bold('Updated'.padEnd(20)) + chalk.dim(' │'));
-    console.log(chalk.dim('├─────────────────────┼─────────────────────┼─────────────────────┤'));
-    
-    // Table rows
+    // Card layout for prompts
     prompts.forEach((prompt: any) => {
       const created = new Date(prompt.createdAt).toLocaleString();
       const updated = new Date(prompt.updatedAt).toLocaleString();
-      console.log(chalk.dim('│ ') + prompt.name.padEnd(20) + chalk.dim(' │ ') + 
-                  chalk.dim(created.padEnd(20)) + chalk.dim(' │ ') + 
-                  chalk.dim(updated.padEnd(20)) + chalk.dim(' │'));
+      
+      // Display each prompt as a separate card
+      console.log(chalk.cyan.bold(`Prompt: ${prompt.name}`));
+      console.log(`Created: ${created}`);
+      console.log(`Updated: ${updated}`);
+      console.log(''); // Empty line between prompts
     });
-    
-    console.log(chalk.dim('└─────────────────────┴─────────────────────┴─────────────────────┘'));
     
     // Usage information
     console.log('\n' + chalk.cyan('Usage:'));

@@ -212,7 +212,6 @@ export function formatOutputContent(
 export async function getModels(providerName?: string): Promise<string[]> {
   try {
     const provider = await getProviderWithApiKey(providerName);
-    console.log(chalk.dim(`Fetching models for ${provider.name}...`));
     
     // Get API key
     let apiKey = 'dummy-key';
@@ -827,6 +826,46 @@ export function setDefaultProvider(providerName: string, modelName?: string): vo
   
   // Set the default provider
   config.set('defaultProvider', providerName);
+}
+
+// Check if a provider is online/accessible
+export async function checkProviderStatus(providerName?: string): Promise<boolean> {
+  try {
+    const provider = await getProviderWithApiKey(providerName);
+    
+    // Create a client for the check
+    const openai = new OpenAI({
+      apiKey: provider.apiKey || 'dummy-key',
+      baseURL: provider.baseUrl,
+      timeout: 5000, // 5 second timeout for quick status check
+    });
+    
+    // Try to list models as a quick health check
+    await openai.models.list();
+    
+    // If we get here, the provider is online
+    return true;
+  } catch (error) {
+    // Provider is offline or unreachable
+    return false;
+  }
+}
+
+// Get model count for a provider
+export async function getModelCount(providerName?: string): Promise<number | null> {
+  try {
+    // First check if provider is online
+    const isOnline = await checkProviderStatus(providerName);
+    if (!isOnline) {
+      return null; // Provider is offline, return null
+    }
+    
+    // If online, fetch models
+    const models = await getModels(providerName);
+    return models.length;
+  } catch (error) {
+    return null;
+  }
 }
 
 // Delete a provider by name
