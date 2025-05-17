@@ -30,3 +30,7 @@ Added React-based CLI UI, conversation mode, progress-only mode, and live stream
 ## v2.1.0
 Adds prompt storage support and improves the UX
 
+
+## v2.1.1
+Fixes the provider setup wizard to ask for API keys
+
