@@ -58,6 +58,7 @@ import { readFile, writeFile, fileExists, generateUniqueFilename } from '../util
 import config, { LLMProvider } from '../config/index.js';
 import { renderStreamingResponse } from '../components/StreamingResponse.js';
 import { registerPromptCommands } from './promptCli.js';
+import { registerJinaReaderCommands } from './jinaReaderCli.js';
 import { processPrompt, formatQuestionWithPrompt } from '../services/promptExecution.js';
 
 // Check for required system dependencies
@@ -110,6 +111,7 @@ Examples:
   $ llamb "What is the capital of France?"     Ask a simple question
   $ llamb -f script.js "Explain this code"     Include a file with your question
   $ llamb "Summarize this" -f document.txt     Process file contents
+  $ llamb -j https://example.com "Explain this website"  Fetch URL content using Jina Reader
   $ llamb -t summarize -f document.txt         Use a saved prompt template
   $ llamb "Generate JSON" -o                   Save response (prompts for filename)
   $ llamb "Generate JSON" -o result.json       Save response to a specific file
@@ -158,6 +160,7 @@ program
   .option('--no-ink', 'Disable ink-based UI rendering (use traditional rendering)')
   .option('-n, --no-history', 'Do not use conversation history for this request')
   .option('-f, --file <path>', 'Path to a file to include with your question')
+  .option('-j, --jina <url>', 'URL to fetch content from using Jina Reader')
   .option('-o, --output [path]', 'Save the response to a file (will prompt for filename)')
   .option('-t, --prompt <name>', 'Use a saved prompt template for your question')
   .option('--overwrite', 'Overwrite existing files without prompting')
@@ -334,6 +337,34 @@ program
           console.log(chalk.green(`✓ File loaded (${(fileContent.length / 1024).toFixed(1)} KB)`));
         } catch (error: any) {
           console.error(chalk.red(`Error reading file: ${error.message}`));
+          
+          // Exit when done in non-chat mode with error code
+          if (!options.chat) {
+            exitWhenDone(1);
+          }
+          return;
+        }
+      }
+      
+      // Handle Jina Reader URL if provided
+      if (options.jina) {
+        try {
+          // Import the Jina Reader service
+          const { fetchJinaReader } = await import('../services/jinaReader.js');
+          
+          console.log(chalk.dim(`Fetching content from URL: ${options.jina}`));
+          const jinaContent = await fetchJinaReader(options.jina);
+          
+          // If file content already exists, append Jina content to it
+          if (fileContent) {
+            fileContent += `\n\n## Content from URL: ${options.jina}\n${jinaContent}`;
+          } else {
+            fileContent = `## Content from URL: ${options.jina}\n${jinaContent}`;
+          }
+          
+          console.log(chalk.green(`✓ Content fetched from URL (${(jinaContent.length / 1024).toFixed(1)} KB)`));
+        } catch (error: any) {
+          console.error(chalk.red(`Error fetching content from URL: ${error.message}`));
           
           // Exit when done in non-chat mode with error code
           if (!options.chat) {
@@ -837,6 +868,9 @@ program
 
 // Register the prompt management commands
 registerPromptCommands(program);
+
+// Register Jina Reader commands
+registerJinaReaderCommands(program);
 
 // Provider Management Commands
 // Provider add command
