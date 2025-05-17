@@ -215,7 +215,7 @@ export async function getModels(providerName?: string): Promise<string[]> {
     
     // Get API key
     let apiKey = 'dummy-key';
-    if (!provider.noAuth) {
+    if (!provider.requiresAuth) {
       try {
         apiKey = await KeyManager.getApiKey(provider.name) || 'dummy-key';
       } catch (e) {
@@ -238,7 +238,7 @@ export async function getModels(providerName?: string): Promise<string[]> {
         'Content-Type': 'application/json',
       };
       
-      if (!provider.noAuth && apiKey !== 'dummy-key') {
+      if (!provider.requiresAuth && apiKey !== 'dummy-key') {
         headers['Authorization'] = `Bearer ${apiKey}`;
       }
       
@@ -405,6 +405,8 @@ export const askQuestionWithStreaming: AskQuestionWithStreamingFunction = async 
       apiKey: provider.apiKey || 'dummy-key',
       baseURL: actualBaseUrl,
       timeout: 300000, // 5 minutes timeout for GhostLM and other slower providers
+      dangerouslyAllowBrowser: true, // Disable auto env vars
+      defaultHeaders: { "llamb-client": "true" } // Add custom header to identify our client
     });
 
     // Get session manager for conversation history
@@ -468,6 +470,8 @@ export const askQuestionWithStreaming: AskQuestionWithStreamingFunction = async 
               apiKey: provider.apiKey || 'dummy-key',
               baseURL: actualBaseUrl,
               timeout: 0, // No timeout - allow unlimited time for slow providers
+              dangerouslyAllowBrowser: true, // Disable auto env vars
+              defaultHeaders: { "llamb-client": "true" } // Add custom header to identify our client
             });
             
             // Try to list models as a quick health check
@@ -722,7 +726,7 @@ export async function getProviderWithApiKey(providerName?: string): Promise<LLMP
   
   // Get API key from secure storage
   let apiKey = null;
-  if (!provider.noAuth) {
+  if (provider.requiresAuth) {
     apiKey = await KeyManager.getApiKey(provider.name);
     
     if (!apiKey) {
@@ -794,7 +798,7 @@ export async function addProvider(provider: LLMProvider & { apiKey?: string }): 
   config.set('providers', providers);
   
   // If API key is provided, store it securely
-  if (apiKey) {
+  if (provider.requiresAuth && apiKey) {
     await KeyManager.storeApiKey(provider.name, apiKey);
   }
 }
@@ -829,15 +833,48 @@ export function setDefaultProvider(providerName: string, modelName?: string): vo
 }
 
 // Check if a provider is online/accessible
-export async function checkProviderStatus(providerName?: string): Promise<boolean> {
+export async function checkProviderStatus(providerName?: string, abortSignal?: AbortSignal, timeoutMs: number = 5000): Promise<boolean> {
   try {
     const provider = await getProviderWithApiKey(providerName);
     
+    // Use faster DNS/reachability check first before attempting a full API request
+    try {
+      const controller = new AbortController();
+      // Create a local abort controller if none provided
+      const signal = abortSignal || controller.signal;
+      
+      // Set a timeout to abort the request after the specified time
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      
+      // Do a simple HEAD request to check basic connectivity
+      const urlObj = new URL(provider.baseUrl);
+      const pingResponse = await fetch(urlObj.origin, {
+        method: 'HEAD',
+        signal,
+        // Very short timeout for the initial connectivity check
+        headers: { "llamb-client": "true" }
+      });
+      
+      // Clear the timeout
+      clearTimeout(timeoutId);
+      
+      // If we can't even reach the host, the provider is definitely offline
+      if (!pingResponse.ok && pingResponse.status >= 500) {
+        return false;
+      }
+    } catch (pingError) {
+      // If we can't connect at all, the provider is offline
+      return false;
+    }
+    
+    // If basic connectivity works, proceed with the API check
     // Create a client for the check
     const openai = new OpenAI({
       apiKey: provider.apiKey || 'dummy-key',
       baseURL: provider.baseUrl,
-      timeout: 5000, // 5 second timeout for quick status check
+      timeout: timeoutMs, // Use specified timeout for model list check
+      dangerouslyAllowBrowser: true, // Disable auto env vars
+      defaultHeaders: { "llamb-client": "true" } // Add custom header to identify our client
     });
     
     // Try to list models as a quick health check
@@ -852,17 +889,37 @@ export async function checkProviderStatus(providerName?: string): Promise<boolea
 }
 
 // Get model count for a provider
-export async function getModelCount(providerName?: string): Promise<number | null> {
+export async function getModelCount(providerName?: string, abortSignal?: AbortSignal): Promise<number | null> {
   try {
-    // First check if provider is online
-    const isOnline = await checkProviderStatus(providerName);
-    if (!isOnline) {
-      return null; // Provider is offline, return null
+    const provider = await getProviderWithApiKey(providerName);
+    
+    // Create a client for direct model listing
+    let apiKey = null;
+    try {
+      apiKey = provider.requiresAuth ? await KeyManager.getApiKey(provider.name) : 'dummy-key';
+    } catch (e) {
+      // Silent fail - we'll try with dummy key if needed
+      apiKey = 'dummy-key';
     }
     
-    // If online, fetch models
-    const models = await getModels(providerName);
-    return models.length;
+    // Create a client with appropriate timeout
+    const openai = new OpenAI({
+      apiKey: apiKey || 'dummy-key',
+      baseURL: provider.baseUrl,
+      timeout: 5000, // 5 second timeout for model list
+      dangerouslyAllowBrowser: true,
+      defaultHeaders: { "llamb-client": "true" }
+    });
+    
+    try {
+      // Try to get models directly to count them
+      const modelsResponse = await openai.models.list();
+      return modelsResponse.data.length;
+    } catch (error) {
+      // Fall back to standard getModels which has more robust parsing
+      const models = await getModels(providerName);
+      return models.length;
+    }
   } catch (error) {
     return null;
   }

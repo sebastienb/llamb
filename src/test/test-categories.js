@@ -44,7 +44,7 @@ export const PROVIDER_TESTS = [
     name: 'List providers',
     command: 'providers',
     expectSuccess: true,
-    validate: (stdout) => stdout.includes('Configured Providers:')
+    validate: (stdout) => stdout.includes('Provider Information:') || stdout.includes('Configured Providers:')
   },
   {
     name: 'Provider default help',

@@ -375,7 +375,7 @@ program
         // Check if the provider has a valid API key
         const provider = await getProviderWithApiKey(options.provider);
 
-        if (!provider.noAuth && !provider.apiKey) {
+        if (provider.requiresAuth && !provider.apiKey) {
           console.log(chalk.yellow(`⚠️  Provider '${provider.name}' requires an API key but none is set.`));
           console.log(chalk.cyan('To add an API key interactively, run:'));
           console.log(chalk.bold('  llamb provider:apikey'));
@@ -388,7 +388,7 @@ program
           console.log('');
 
           // Check if any local provider is available as a fallback
-          const localProviders = getProviders().filter(p => p.noAuth === true);
+          const localProviders = getProviders().filter(p => !p.requiresAuth);
           if (localProviders.length > 0) {
             console.log(chalk.green(`You can use a local provider without an API key, for example:`));
             console.log(chalk.bold(`llamb -p ${localProviders[0].name} "${question}"`));
@@ -849,6 +849,15 @@ program
       // Configure ESC key to cancel
       const cleanupEscHandler = setupEscapeKeyHandler();
       
+      // Define interface for provider info
+      interface ProviderInfo {
+        name: string;
+        baseUrl: string;
+        requiresAuth: boolean;
+        apiKey?: string;
+      }
+
+      // First collect basic provider info without API key
       const basicInfo = await inquirer.prompt([
         {
           type: 'input',
@@ -864,18 +873,31 @@ program
         },
         {
           type: 'confirm',
-          name: 'noAuth',
+          name: 'requiresAuth',
           message: 'Does this provider require authentication?',
           default: false
-        },
-        {
-          type: 'password',
-          name: 'apiKey',
-          message: 'API Key (leave empty for no key):',
-          when: (answers) => !answers.noAuth
         }
-      ]);
+      ]) as ProviderInfo;
       
+      // Ask for API key separately if authentication is required
+      // This ensures we get a valid API key before attempting to fetch models
+      if (basicInfo.requiresAuth) {
+        const apiKeyPrompt = await inquirer.prompt([
+          {
+            type: 'password',
+            name: 'apiKey',
+            message: 'API Key:',
+            validate: (input) => input.trim() !== '' ? true : 'API key is required for authenticated providers'
+          }
+        ]);
+        if (!apiKeyPrompt.apiKey) {
+          console.error(chalk.red('API key is required for authenticated providers. Aborting.'));
+          cleanupEscHandler();
+          return;
+        }
+        basicInfo.apiKey = apiKeyPrompt.apiKey;
+      }
+
       // Try to fetch models for this provider
       console.log(chalk.dim(`Checking if we can fetch available models from ${basicInfo.baseUrl}...`));
       
@@ -892,6 +914,8 @@ program
             const openai = new OpenAI({
               apiKey: apiKey,
               baseURL: basicInfo.baseUrl,
+              dangerouslyAllowBrowser: true, // Disable auto env vars
+              defaultHeaders: { "llamb-client": "true" } // Add custom header to identify our client
             });
             
             const response = await openai.models.list();
@@ -993,8 +1017,8 @@ program
         ]);
       }
       
-      // Combine all answers
-      const answers = {
+      // Combine all answers with proper typing
+      const answers: ProviderInfo & { defaultModel: string } = {
         ...basicInfo,
         ...modelAnswer
       };
@@ -1004,7 +1028,7 @@ program
         name: answers.name,
         baseUrl: answers.baseUrl,
         defaultModel: answers.defaultModel,
-        noAuth: answers.noAuth,
+        requiresAuth: answers.requiresAuth,
         apiKey: answers.apiKey
       });
 
@@ -1099,7 +1123,7 @@ program
             name: provider.name + '_temp',
             baseUrl: urlAnswer.baseUrl,
             defaultModel: 'temp',
-            noAuth: provider.noAuth
+            requiresAuth: provider.requiresAuth
           };
           
           // Add the temporary provider
@@ -1148,7 +1172,7 @@ program
             name: 'updateApiKey',
             message: 'Update API key?',
             default: false,
-            when: () => !provider.noAuth
+            when: () => provider.requiresAuth
           },
           {
             type: 'password',
@@ -1317,8 +1341,8 @@ program
           return;
         }
 
-        if (provider.noAuth) {
-          console.log(chalk.yellow(`Provider '${provider.name}' does not require authentication.`));
+        if (provider.requiresAuth) {
+          console.log(chalk.yellow(`Provider '${provider.name}' requires authentication.`));
           return;
         }
 
@@ -1392,18 +1416,25 @@ program
       // Update spinner text
       spinner.text = chalk.dim('Collecting provider data...');
       
-      // Collect provider data in parallel
+      // Create a shared abort controller for all health checks
+      const abortController = new AbortController();
+      
+      // Collect provider data in parallel with faster timeouts
       const providerData = await Promise.all(providers.map(async (provider) => {
-        // Get model count
-        const modelCount = await getModelCount(provider.name);
-        const modelCountDisplay = modelCount !== null ? modelCount.toString() : '-';
-        
-        // Check provider status
-        const isOnline = await checkProviderStatus(provider.name);
-        const statusDisplay = isOnline ? chalk.green('✓ Online') : chalk.red('✗ Offline');
-        
         // Is this the default provider?
         const isDefault = provider.name === defaultProviderName;
+        
+        // Use a shorter timeout of 2 seconds for health checks to make the command more responsive
+        const healthCheckTimeout = 2000; // 2 seconds
+        
+        // Run both status check and model count in parallel for online providers
+        const [isOnline, modelCount] = await Promise.all([
+          checkProviderStatus(provider.name, abortController.signal, healthCheckTimeout),
+          getModelCount(provider.name, abortController.signal)
+        ]);
+        
+        const statusDisplay = isOnline ? chalk.green('✓ Online') : chalk.red('✗ Offline');
+        const modelCountDisplay = (isOnline && modelCount !== null) ? modelCount.toString() : '-';
         
         return {
           name: provider.name,
@@ -1555,7 +1586,7 @@ program
             console.log(chalk.dim(`Using OpenAI client to fetch models from ${currentProvider.baseUrl}`));
             // Get the API key from KeyManager
             let apiKey = 'dummy-key';
-            if (!currentProvider.noAuth) {
+            if (!currentProvider.requiresAuth) {
               try {
                 const providerKey = await KeyManager.getApiKey(currentProvider.name);
                 if (providerKey) {
@@ -1674,7 +1705,7 @@ program
           name: currentProvider.name,
           baseUrl: currentProvider.baseUrl,
           defaultModel: modelAnswer.defaultModel,
-          noAuth: currentProvider.noAuth
+          requiresAuth: currentProvider.requiresAuth
         });
         
         // Set as default provider
@@ -2010,7 +2041,7 @@ async function handleQuestion(question: string, options: any, fileContent?: stri
     // Check if the provider has a valid API key if needed
     const provider = await getProviderWithApiKey(options.provider);
 
-    if (!provider.noAuth && !provider.apiKey) {
+    if (provider.requiresAuth && !provider.apiKey) {
       console.log(chalk.yellow(`⚠️  Provider '${provider.name}' requires an API key but none is set.`));
       console.log(chalk.cyan('To add an API key interactively, run:'));
       console.log(chalk.bold('  llamb provider:apikey'));
@@ -2023,7 +2054,7 @@ async function handleQuestion(question: string, options: any, fileContent?: stri
       console.log('');
 
       // Check if any local provider is available as a fallback
-      const localProviders = getProviders().filter(p => p.noAuth === true);
+      const localProviders = getProviders().filter(p => !p.requiresAuth);
       if (localProviders.length > 0) {
         console.log(chalk.green(`You can use a local provider without an API key, for example:`));
         console.log(chalk.bold(`llamb -p ${localProviders[0].name} "${question}"`));
@@ -2298,3 +2329,20 @@ function setupEscapeKeyHandler() {
     process.stdin.off('keypress', keypressHandler);
   };
 }
+
+// Migration: Convert old 'noAuth' to 'requiresAuth' for all providers
+(function migrateProviderAuthFlag() {
+  const providers = config.get('providers');
+  let migrated = false;
+  for (const provider of providers) {
+    if ('noAuth' in provider) {
+      provider.requiresAuth = !provider.noAuth;
+      delete provider.noAuth;
+      migrated = true;
+    }
+  }
+  if (migrated) {
+    config.set('providers', providers);
+    console.log(chalk.yellow('Migrated old provider config to new format (requiresAuth).'));
+  }
+})();

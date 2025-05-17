@@ -10,7 +10,7 @@ export interface LLMProvider {
   // apiKey will be stored securely and not in this config
   defaultModel: string;
   // Used only for local providers with no auth
-  noAuth?: boolean;
+  requiresAuth?: boolean;
 }
 
 export interface ConfigSchema {
