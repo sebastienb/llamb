@@ -20,6 +20,7 @@ import os from 'os';
 // Import inquirer directly now that we have polyfills
 import inquirer from 'inquirer';
 import { askQuestion, askQuestionWithStreaming, getModels, getProviders, getDefaultProvider, addProvider, setDefaultProvider, getProviderWithApiKey, deleteProvider, formatOutputContent, checkProviderStatus, getModelCount } from '../services/llm.js';
+import { renderContinuousConversation } from '../components/ContinuousConversation.js';
 
 // Global auto-close prevention system
 // This allows any feature to prevent the app from closing while user interaction is needed
@@ -2153,101 +2154,119 @@ async function startContinuousConversation(
   options: any,
   fileContent?: string
 ) {
-  let conversationActive = true;
-  let currentQuestion = initialQuestion;
-  let currentFileContent = fileContent;
+  // Create an AbortController for cancellation support
+  const abortController = new AbortController();
 
-  // Force disable Ink UI in continuous conversation mode to avoid issues
-  if (options.ink !== false) {
-    console.log(chalk.dim('Note: Ink UI is disabled in continuous conversation mode for better terminal compatibility.'));
-    options.ink = false;
-  }
-
-  // Start the conversation with the initial question
   try {
-    await handleQuestion(currentQuestion, options, currentFileContent);
-
-    // Continue the conversation until the user exits
-    while (conversationActive) {
-      // Prompt for the next question
-      try {
-        console.log(chalk.dim('Ready for follow-up questions. Type /exit to end the conversation.'));
-        const followUp = await customPrompt('🦙 Follow-up question (type /exit to end conversation):');
-
-        // Check if the user wants to exit
-        if (followUp.toLowerCase() === '/exit' ||
-            followUp.toLowerCase() === '/quit' ||
-            followUp.trim() === '') {
-          console.log(chalk.green('Conversation ended. Thanks for using LLaMB!'));
-          conversationActive = false;
-          continue;
-        }
-
-        // Handle slash commands
-        if (followUp.startsWith('/')) {
-          const command = followUp.substring(1).toLowerCase();
+    // Function to handle asking a question and getting a response
+    const askQuestionHandler = async (question: string): Promise<string> => {
+      return new Promise(async (resolve, reject) => {
+        try {
+          // Use streaming to get response
+          let fullResponse = "";
+          const response = await askQuestionWithStreaming(
+            question,
+            (chunk: string) => {
+              // Accumulate response
+              fullResponse += chunk;
+            },
+            options.model,
+            options.provider,
+            options.baseUrl,
+            options.history,
+            question === initialQuestion ? fileContent : undefined
+          );
           
-          switch (command) {
-            case 'clear':
-              const sessionManager = SessionManager.getInstance();
-              sessionManager.clearSession();
-              console.log(chalk.green('Conversation history cleared.'));
-              continue;
-              
-            case 'new':
-              const newSessionManager = SessionManager.getInstance();
-              newSessionManager.createNewSession();
-              console.log(chalk.green('Started a new conversation.'));
-              continue;
-              
-            case 'history':
-              const historySessionManager = SessionManager.getInstance();
-              const messages = historySessionManager.getMessages();
-              
-              if (messages.length === 0) {
-                console.log(chalk.yellow('No conversation history yet.'));
-                continue;
-              }
-              
-              console.log(chalk.bold('Conversation History:'));
-              messages.forEach((message, index) => {
-                const role = message.role === 'user' ? 'You' : 'Assistant';
-                console.log(`${chalk.bold(role)}: ${message.content}`);
-                if (index < messages.length - 1) console.log('');
-              });
-              continue;
-              
-            default:
-              if (command !== 'exit' && command !== 'quit') {
-                console.log(chalk.yellow(`Unknown command: /${command}`));
-                console.log(chalk.dim('Available commands: /exit, /clear, /new, /history'));
-              } else {
-                console.log(chalk.green('Conversation ended. Thanks for using LLaMB!'));
-                conversationActive = false;
-              }
-              continue;
-          }
+          // Handle the case where we get a cancellation object
+          const answer = typeof response === 'object' && 'cancelled' in response
+            ? response.partialResponse || ''
+            : response;
+            
+          resolve(answer);
+        } catch (error: any) {
+          reject(error);
         }
+      });
+    };
 
-        // Update the current question and file content
-        currentQuestion = followUp;
-        currentFileContent = undefined; // Only use the file for the initial question
-        
-        // Process the follow-up question
-        await handleQuestion(currentQuestion, options);
-      } catch (error: any) {
-        if (error.message === 'User cancelled') {
-          conversationActive = false;
-        } else {
-          console.error(chalk.red('Error:'), error.message);
-        }
+    // Function to handle command execution
+    const executeCommand = (command: string) => {
+      const sessionManager = SessionManager.getInstance();
+      
+      switch (command) {
+        case 'clear':
+          sessionManager.clearSession();
+          console.log(chalk.green('Conversation history cleared.'));
+          break;
+          
+        case 'new':
+          sessionManager.createNewSession();
+          console.log(chalk.green('Started a new conversation.'));
+          break;
+          
+        case 'history':
+          const messages = sessionManager.getMessages();
+          
+          if (messages.length === 0) {
+            console.log(chalk.yellow('No conversation history yet.'));
+            return;
+          }
+          
+          console.log(chalk.bold('Conversation History:'));
+          messages.forEach((message, index) => {
+            const role = message.role === 'user' ? 'You' : 'Assistant';
+            console.log(`${chalk.bold(role)}: ${message.content}`);
+            if (index < messages.length - 1) console.log('');
+          });
+          break;
+          
+        default:
+          console.log(chalk.yellow(`Unknown command: /${command}`));
+          console.log(chalk.dim('Available commands: /exit, /clear, /new, /history'));
       }
-    }
+    };
+
+    // Function to handle exiting
+    const handleExit = () => {
+      console.log(chalk.green('Conversation ended. Thanks for using LLaMB!'));
+      // Force unmount
+      if (unmountUI) {
+        unmountUI();
+      }
+      // Ensure we exit when done
+      exitWhenDone();
+    };
+
+    // Render the continuous conversation UI
+    const unmountUI = renderContinuousConversation(
+      initialQuestion,
+      askQuestionHandler,
+      handleExit,
+      executeCommand
+    );
+
+    // Handle Ctrl+C properly
+    const sigintHandler = () => {
+      console.log(chalk.red('\nConversation cancelled by user'));
+      abortController.abort();
+      if (unmountUI) {
+        unmountUI();
+      }
+      exitWhenDone();
+    };
+
+    process.on('SIGINT', sigintHandler);
+
+    // Keep the process alive until manually exited
+    // This is needed because Ink components run asynchronously
+    await new Promise(() => {
+      // This promise intentionally never resolves
+      // It keeps the process alive until manually exited
+    });
+
   } catch (error: any) {
     console.error(chalk.red('Error:'), error.message);
-  } finally {
     // Ensure we exit when done
-    // This helps avoid hanging processes
     exitWhenDone();
   }
 }
