@@ -18,6 +18,7 @@ export interface ConfigSchema {
   defaultProvider: string;
   useProgressOnly: boolean;
   useInkUI: boolean;
+  jinaReaderApiKey?: string;
 }
 
 const config = new Conf<ConfigSchema>({
@@ -38,6 +39,10 @@ const config = new Conf<ConfigSchema>({
     useInkUI: {
       type: 'boolean',
       default: true, // Use the ink UI by default
+    },
+    jinaReaderApiKey: {
+      type: 'string',
+      default: '', // No default Jina Reader API key
     }
   },
 });

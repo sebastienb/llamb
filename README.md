@@ -8,6 +8,7 @@ LLaMB is a command-line tool that allows you to interact with Large Language Mod
 - 💬 **Conversation history** - Follow-up on previous questions with context
 - 🔄 **Continuous conversation** - Interactive chat mode for follow-up questions
 - 📄 **File handling** - Include file contents in your questions and save responses to files
+- 🌐 **URL content** - Fetch URL content using Jina Reader to include in prompts
 - 🔤 **Smart file extensions** - Automatically uses appropriate file extensions for code outputs
 - 📝 **Prompt templates** - Save and reuse common prompts to streamline frequent tasks
 - 🔄 **Multiple providers** - Support for OpenAI, Anthropic, Mistral, Ollama, and more
@@ -43,6 +44,12 @@ Or add a provider using the interactive command:
 
 ```bash
 llamb provider:add
+```
+
+You can set your Jina Reader API key:
+
+```bash
+llamb jina:apikey
 ```
 
 LLaMB supports many providers out of the box with pre-configured settings:
@@ -91,13 +98,29 @@ man llamb
 llamb what is the best command to install docker on ubuntu
 ```
 
-### File Operations
+### File and URL Operations
 
 #### Include a file in your question
 
 ```bash
 llamb -f script.js "Explain this code and suggest improvements"
 llamb "Summarize this document" -f document.txt
+```
+
+#### Fetch URL content with Jina Reader
+
+```bash
+# Basic usage - fetch URL content and analyze it
+llamb -j https://example.com "Explain this website"
+
+# Combine with other options
+llamb -j https://github.com/owner/repo/blob/main/README.md -p openai "What features does this project have?"
+
+# Set or update the Jina Reader API key (optional)
+llamb jina:apikey
+
+# Test Jina Reader with a URL
+llamb jina:test https://example.com
 ```
 
 #### Save responses to files

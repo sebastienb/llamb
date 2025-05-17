@@ -47,6 +47,9 @@ Do not use conversation history for this request
 .B \-f, \-\-file <path>
 Path to a file to include with your question
 .TP
+.B \-j, \-\-jina <url>
+URL to fetch content from using Jina Reader
+.TP
 .B \-o, \-\-output [path]
 Save the response to a file. If path is not provided, you will be prompted for a filename. When saving code responses, appropriate file extensions will be automatically applied if the response is a pure code block.
 .TP
@@ -119,6 +122,12 @@ Delete a prompt template
 .TP
 .B llamb prompt:show
 Show details of a specific prompt template
+.TP
+.B llamb jina:apikey
+Set or update the Jina Reader API key
+.TP
+.B llamb jina:test <url>
+Test the Jina Reader API with a URL
 .SH SLASH COMMANDS
 Llamb supports short-form slash commands when entering questions. In continuous conversation mode (-c), there are additional slash commands available:
 .TP
@@ -164,6 +173,15 @@ Include a file with your question:
 .TP
 Process file contents:
 .B llamb "Summarize this" -f document.txt
+.TP
+Fetch URL content using Jina Reader:
+.B llamb -j https://example.com "Explain this website"
+.TP
+Set or update the Jina Reader API key:
+.B llamb jina:apikey
+.TP
+Test Jina Reader with a URL:
+.B llamb jina:test https://example.com
 .TP
 Save response (prompts for filename):
 .B llamb "Generate JSON" -o
