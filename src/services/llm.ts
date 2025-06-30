@@ -382,6 +382,7 @@ export const askQuestionWithStreaming: AskQuestionWithStreamingFunction = async 
   fileContent?: string,
   abortController?: AbortController
 ): Promise<string | { cancelled: boolean, partialResponse: string }> {
+  console.log(chalk.dim(`Debug: askQuestionWithStreaming called with streamCallback: ${streamCallback ? 'provided' : 'null'}`));
   const provider = await getProviderWithApiKey(providerName);
   const model = modelName || provider.defaultModel;
 
@@ -435,6 +436,7 @@ export const askQuestionWithStreaming: AskQuestionWithStreamingFunction = async 
 
     // If streamCallback is provided, use streaming
     if (streamCallback) {
+      console.log(chalk.dim(`Debug: Using streaming mode with callback`));
       let fullResponse = '';
 
       // Create a local AbortController if none was provided
@@ -561,6 +563,7 @@ export const askQuestionWithStreaming: AskQuestionWithStreamingFunction = async 
           // Track if this chunk contains reasoning content
           const hasReasoningInThisChunk = !!reasoningContent;
           
+          // Simplified streaming logic - always forward chunks directly
           // Handle the streaming of both content types
           if (content || reasoningContent) {
             let streamedChunk = '';
@@ -586,22 +589,20 @@ export const askQuestionWithStreaming: AskQuestionWithStreamingFunction = async 
                 previousWasReasoning = false;
               }
               
-              // Check for various formats of reasoning blocks within the content itself
-              if (content.includes('<reasoning') || content.includes('</reasoning') || 
-                  content.includes('<reasoning_content') || content.includes('</reasoning_content') ||
-                  content.includes('thinking:') || content.includes('reasoning:') ||
-                  content.includes('<thinking>') || content.includes('</thinking>') ||
-                  content.includes('<reasoning>') || content.includes('</reasoning>') ||
-                  content.includes('<claude:')) {
-                console.log('Found reasoning/thinking block in content chunk:', content);
-              }
-              
               streamedChunk += content;
             }
             
+            // Always send the chunk to the callback and accumulate the response
             if (streamedChunk) {
-              streamCallback(streamedChunk);
-              fullResponse += streamedChunk;
+              try {
+                // Ensure the callback is executed
+                streamCallback(streamedChunk);
+                fullResponse += streamedChunk;
+              } catch (callbackError) {
+                console.error('Error in streaming callback:', callbackError);
+                // Still accumulate the response even if callback fails
+                fullResponse += streamedChunk;
+              }
             }
           }
         }
@@ -655,7 +656,13 @@ export const askQuestionWithStreaming: AskQuestionWithStreamingFunction = async 
         // Process the response, including <think>...</think> and reasoning_content blocks
         // We're keeping all content visible to the user as it can be useful for debugging and understanding
         const filteredResponse = filterThinkBlocks(fullResponse);
-        sessionManager.addAssistantMessage(filteredResponse);
+        
+        // For streaming responses, we could potentially track token usage in the future
+        // by collecting the usage from the last chunk, which sometimes contains summary information
+        // For now, we're leaving usage as undefined
+        const usage = undefined; // Future enhancement: capture streaming usage data if possible
+        
+        sessionManager.addAssistantMessage(filteredResponse, usage);
         return filteredResponse;
       }
 
@@ -691,7 +698,20 @@ export const askQuestionWithStreaming: AskQuestionWithStreamingFunction = async 
 
       // Save the assistant's response to the session
       if (content) {
-        sessionManager.addAssistantMessage(result);
+        // Extract token usage information if available
+        const usage = response?.usage ? {
+          prompt_tokens: response.usage?.prompt_tokens,
+          completion_tokens: response.usage?.completion_tokens,
+          total_tokens: response.usage?.total_tokens
+        } : undefined;
+        
+        // Add the assistant message with usage information
+        sessionManager.addAssistantMessage(result, usage);
+        
+        // Log usage information for debugging
+        if (usage) {
+          console.log(`Token usage - Prompt: ${usage.prompt_tokens}, Completion: ${usage.completion_tokens}, Total: ${usage.total_tokens}`);
+        }
       }
 
       return result;

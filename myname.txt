@@ -1,0 +1,17 @@
+Based on your `changes.txt` document, it seems that LLaMB is a command-line tool that allows users to interact with Large Language Models (LLMs) directly from their terminal. The main features of LLaMB include:
+
+* Conversation history to preserve context for follow-up questions
+* File input/output support to include files in questions and save responses to files
+* Support for multiple LLM providers, including OpenAI, Anthropic, and Ollama
+
+The tool also provides an interactive chat mode, known as "continuous conversation" mode, which allows users to have back-and-forth conversations with the model. Additionally, LLaMB can be used in conjunction with other tools, such as Jina Reader, to fetch URL content and analyze it.
+
+The documentation for LLaMB covers various aspects of its usage, including:
+
+* Installation instructions
+* Setting up API keys
+* Using different providers and models
+* Saving responses to files with smart file extensions
+* Interaction options, such as continuous conversation mode and prompt templates
+
+Overall, LLaMB seems to be a powerful tool that enables users to interact with LLMs in a more efficient and effective way.

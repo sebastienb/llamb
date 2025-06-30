@@ -8,6 +8,11 @@ import crypto from 'crypto';
 export interface Message {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  usage?: {
+    total_tokens?: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  };
 }
 
 export interface Session {
@@ -149,11 +154,14 @@ export class SessionManager {
 
   /**
    * Add an assistant message to the conversation
+   * @param content The message content
+   * @param usage Optional token usage information
    */
-  public addAssistantMessage(content: string): void {
+  public addAssistantMessage(content: string, usage?: { prompt_tokens?: number, completion_tokens?: number, total_tokens?: number }): void {
     this.currentSession.messages.push({
       role: 'assistant',
-      content
+      content,
+      usage
     });
     this.currentSession.updatedAt = new Date().toISOString();
     this.saveSession();

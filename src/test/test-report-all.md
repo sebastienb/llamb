@@ -1,6 +1,6 @@
 # LLaMB CLI Comprehensive Test Report
 
-Generated on: 5/16/2025, 12:18:52 PM
+Generated on: 6/30/2025, 1:04:07 AM
 
 ## Summary
 
@@ -50,7 +50,7 @@ Generated on: 5/16/2025, 12:18:52 PM
 
 Provider Information:
 
-Provider: ollama
+Provider: ollama (default)
 URL:      http://localhost:11434/v1
 Model:    llama3.2:latest
 Models:   1
@@ -59,24 +59,20 @@ Status:   ✓ Online
 Provider: GhostLM
 URL:      http://100.70.163.13:1234/v1
 Model:    qwen3-4b
-Models:   13
+Models:   14
 Status:   ✓ Online
 
-Provider: OpenAI
-URL:      https://api.openai.com/v1
-Model:    invalid-api-key-just-testing
-Models:   -
-Status:   ✗ Offline
-
-Provider: openAI (default)
+Provider: openAI
 URL:      https://api.openai.com/v1
 Model:    o4-mini
-Models:   1
+Models:   79
 Status:   ✓ Online
 
 
 Usage:
-  llamb -p...
+  llamb -p <provider-name>          Use a specific provider
+  llamb provider:edit <provider>    Edit a provider
+  llamb provider:apike...
 ```
 
 ---

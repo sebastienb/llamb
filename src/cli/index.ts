@@ -398,7 +398,12 @@ program
       // If continuous conversation mode is enabled, use the specialized function
       if (options.chat) {
         console.log(chalk.dim('Starting continuous conversation mode...'));
-        await startContinuousConversation(question, options, fileContent);
+        // Pass all options needed for file handling and output
+        await startContinuousConversation(
+          question, 
+          options, 
+          fileContent
+        );
         return;
       }
 
@@ -444,6 +449,11 @@ program
 
         // Check if we should use the ink-based UI (enabled by default, can be disabled with --no-ink)
         const useInkUI = options.ink !== false && config.get('useInkUI') === true;
+        
+        // Debug flags for streaming
+        console.log(chalk.dim(`Debug: Streaming mode enabled: ${shouldStream}`));
+        console.log(chalk.dim(`Debug: Progress-only mode: ${useProgressOnly}`));
+        console.log(chalk.dim(`Debug: Ink UI mode: ${useInkUI}`));
         
         // If we're going to save output to a file, register a global flag to prevent auto-exit
         if (options.output !== undefined) {
@@ -2158,18 +2168,29 @@ async function startContinuousConversation(
   const abortController = new AbortController();
 
   try {
-    // Function to handle asking a question and getting a response
-    const askQuestionHandler = async (question: string): Promise<string> => {
+    // Function to handle asking a question and getting a response with usage information
+    const askQuestionHandler = async (question: string): Promise<string | { content: string; usage?: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number } }> => {
       return new Promise(async (resolve, reject) => {
         try {
           // Use streaming to get response
           let fullResponse = "";
+          let usage: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number } | undefined;
+          
+          // We don't want to manually display anything in the console here,
+          // as the ContinuousConversation component handles its own rendering
+          // Just collect the response via streaming
+          
+          // Define streaming callback for continuous mode - no visual output here,
+          // just collect the full response for the UI component to display
+          const streamingCallback = (chunk: string) => {
+            // Silently accumulate the response - don't write to console
+            // as this will interfere with the Ink UI
+            fullResponse += chunk;
+          };
+          
           const response = await askQuestionWithStreaming(
             question,
-            (chunk: string) => {
-              // Accumulate response
-              fullResponse += chunk;
-            },
+            streamingCallback,
             options.model,
             options.provider,
             options.baseUrl,
@@ -2177,12 +2198,40 @@ async function startContinuousConversation(
             question === initialQuestion ? fileContent : undefined
           );
           
+          // Add a newline after streaming is complete
+          console.log('');
+          
           // Handle the case where we get a cancellation object
-          const answer = typeof response === 'object' && 'cancelled' in response
-            ? response.partialResponse || ''
-            : response;
+          let answer: string;
+          if (typeof response === 'object' && 'cancelled' in response) {
+            answer = response.partialResponse || '';
             
-          resolve(answer);
+            // Usage information isn't available in cancellation objects right now
+            // In the future we could add this if needed
+          } else {
+            answer = response as string;
+            
+            // Try to extract usage information from the session manager
+            try {
+              const sessionManager = SessionManager.getInstance();
+              const lastMessage = sessionManager.getMessages().slice(-1)[0];
+              if (lastMessage && lastMessage.usage) {
+                usage = lastMessage.usage;
+              }
+            } catch (e) {
+              // Ignore errors when trying to get usage information
+            }
+          }
+          
+          // If we have usage information, include it in the response
+          if (usage) {
+            resolve({
+              content: answer,
+              usage: usage
+            });
+          } else {
+            resolve(answer);
+          }
         } catch (error: any) {
           reject(error);
         }
@@ -2240,9 +2289,12 @@ async function startContinuousConversation(
     // Render the continuous conversation UI
     const unmountUI = renderContinuousConversation(
       initialQuestion,
-      askQuestionHandler,
+      askQuestionHandler as (question: string) => Promise<string>,
       handleExit,
-      executeCommand
+      executeCommand,
+      options.file,           // Pass file path option
+      options.output,         // Pass output path option
+      options.overwrite       // Pass overwrite option
     );
 
     // Handle Ctrl+C properly
